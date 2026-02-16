@@ -225,7 +225,7 @@ class TestExecute:
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", command_timeout=42)
             sb.execute("echo hi")
-            mock.run.assert_called_once_with("echo hi", timeout=42)
+            mock.run.assert_called_once_with("sh -c 'echo hi'", timeout=42)
             sb.stop()
 
 
@@ -277,7 +277,10 @@ class TestUploadFiles:
             assert len(results) == 1
             assert results[0].path == "/tmp/hello.txt"
             assert results[0].error is None
-            mock.write.assert_called_once_with("/tmp/hello.txt", b"world")
+            # Verify run() was called with a base64 command
+            cmd = mock.run.call_args[0][0]
+            assert "base64 -d" in cmd
+            assert "/tmp/hello.txt" in cmd
             sb.stop()
 
     def test_upload_multiple_files(self) -> None:
@@ -300,7 +303,7 @@ class TestUploadFiles:
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("relative/path.txt", b"data")])
             assert results[0].error == "invalid_path"
-            mock.write.assert_not_called()
+            # run() should not have been called for the file (only for lazy init)
             sb.stop()
 
     def test_upload_empty_path(self) -> None:
@@ -312,8 +315,11 @@ class TestUploadFiles:
             sb.stop()
 
     def test_upload_permission_denied(self) -> None:
-        mock = make_mock_client()
-        mock.write.side_effect = PermissionError("nope")
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(
+                stderr="sh: Permission denied", exit_code=1
+            )
+        )
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/root/secret.txt", b"data")])
@@ -321,8 +327,11 @@ class TestUploadFiles:
             sb.stop()
 
     def test_upload_is_directory(self) -> None:
-        mock = make_mock_client()
-        mock.write.side_effect = IsADirectoryError()
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(
+                stderr="Is a directory", exit_code=1
+            )
+        )
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/tmp/", b"data")])
@@ -334,13 +343,14 @@ class TestUploadFiles:
         mock = make_mock_client()
         call_count = 0
 
-        def write_effect(path: str, content: bytes) -> None:
+        def run_effect(cmd: str, timeout: int = 60) -> FakeExecutionResult:
             nonlocal call_count
             call_count += 1
             if call_count == 2:
-                raise PermissionError("denied")
+                return FakeExecutionResult(stderr="Permission denied", exit_code=1)
+            return FakeExecutionResult(exit_code=0)
 
-        mock.write = write_effect
+        mock.run = run_effect
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/a.txt", b"ok"), ("/b.txt", b"fail")])
@@ -356,8 +366,12 @@ class TestUploadFiles:
 
 class TestDownloadFiles:
     def test_download_single_file(self) -> None:
-        mock = make_mock_client()
-        mock.read.return_value = b"file content here"
+        import base64 as b64
+
+        encoded = b64.b64encode(b"file content here").decode("ascii")
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0)
+        )
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/tmp/test.txt"])
@@ -368,8 +382,12 @@ class TestDownloadFiles:
             sb.stop()
 
     def test_download_file_not_found(self) -> None:
-        mock = make_mock_client()
-        mock.read.side_effect = FileNotFoundError()
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(
+                stderr="base64: /nonexistent.txt: No such file or directory",
+                exit_code=1,
+            )
+        )
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/nonexistent.txt"])
@@ -378,8 +396,12 @@ class TestDownloadFiles:
             sb.stop()
 
     def test_download_permission_denied(self) -> None:
-        mock = make_mock_client()
-        mock.read.side_effect = PermissionError()
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(
+                stderr="base64: /root/secret: Permission denied",
+                exit_code=1,
+            )
+        )
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/root/secret"])
@@ -387,8 +409,12 @@ class TestDownloadFiles:
             sb.stop()
 
     def test_download_is_directory(self) -> None:
-        mock = make_mock_client()
-        mock.read.side_effect = IsADirectoryError()
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(
+                stderr="base64: /tmp/: Is a directory",
+                exit_code=1,
+            )
+        )
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/tmp/"])
@@ -402,12 +428,26 @@ class TestDownloadFiles:
             results = sb.download_files(["relative.txt"])
             assert results[0].error == "invalid_path"
             assert results[0].content is None
-            mock.read.assert_not_called()
             sb.stop()
 
     def test_download_multiple_files(self) -> None:
+        import base64 as b64
+
+        call_count = 0
+
+        def run_effect(cmd: str, timeout: int = 60) -> FakeExecutionResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return FakeExecutionResult(
+                    stdout=b64.b64encode(b"aaa").decode() + "\n", exit_code=0
+                )
+            return FakeExecutionResult(
+                stdout=b64.b64encode(b"bbb").decode() + "\n", exit_code=0
+            )
+
         mock = make_mock_client()
-        mock.read.side_effect = [b"aaa", b"bbb"]
+        mock.run = run_effect
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/a.txt", "/b.txt"])
@@ -416,8 +456,23 @@ class TestDownloadFiles:
             sb.stop()
 
     def test_download_partial_success(self) -> None:
+        import base64 as b64
+
+        call_count = 0
+
+        def run_effect(cmd: str, timeout: int = 60) -> FakeExecutionResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return FakeExecutionResult(
+                    stdout=b64.b64encode(b"ok").decode() + "\n", exit_code=0
+                )
+            return FakeExecutionResult(
+                stderr="No such file or directory", exit_code=1
+            )
+
         mock = make_mock_client()
-        mock.read.side_effect = [b"ok", FileNotFoundError()]
+        mock.run = run_effect
         with patch("agentic_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/a.txt", "/missing.txt"])

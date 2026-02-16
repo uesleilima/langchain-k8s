@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import logging
+import shlex
 import threading
 import uuid
 from typing import TYPE_CHECKING
@@ -181,7 +183,12 @@ class KubernetesSandbox(BaseSandbox):
         self,
         files: list[tuple[str, bytes]],
     ) -> list[FileUploadResponse]:
-        """Upload files into the sandbox using the native SDK ``write()`` API."""
+        """Upload files into the sandbox via base64-encoded shell commands.
+
+        The native SDK ``write()`` endpoint only places files in a fixed upload
+        directory and ignores the full path.  To write to arbitrary absolute
+        paths we encode the content as base64 and pipe it through the shell.
+        """
         self._ensure_sandbox()
         assert self._client is not None
 
@@ -192,12 +199,19 @@ class KubernetesSandbox(BaseSandbox):
                 results.append(FileUploadResponse(path=path, error=error))
                 continue
             try:
-                self._client.write(path, content)
-                results.append(FileUploadResponse(path=path, error=None))
-            except PermissionError:
-                results.append(FileUploadResponse(path=path, error="permission_denied"))
-            except IsADirectoryError:
-                results.append(FileUploadResponse(path=path, error="is_directory"))
+                b64 = base64.b64encode(content).decode("ascii")
+                escaped_path = shlex.quote(path)
+                cmd = (
+                    f"mkdir -p $(dirname {escaped_path}) && "
+                    f"printf '%s' '{b64}' | base64 -d > {escaped_path}"
+                )
+                resp = self._run_raw(cmd)
+                if resp.exit_code != 0:
+                    results.append(
+                        FileUploadResponse(path=path, error=_classify_error(resp.output))
+                    )
+                else:
+                    results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
                 logger.warning("upload_files failed for %s: %s", path, exc)
                 results.append(FileUploadResponse(path=path, error="invalid_path"))
@@ -207,7 +221,12 @@ class KubernetesSandbox(BaseSandbox):
         self,
         paths: list[str],
     ) -> list[FileDownloadResponse]:
-        """Download files from the sandbox using the native SDK ``read()`` API."""
+        """Download files from the sandbox via base64-encoded shell commands.
+
+        The native SDK ``read()`` endpoint constructs URLs that double-encode
+        the leading ``/`` of absolute paths.  To reliably read arbitrary files
+        we base64-encode on the sandbox and decode locally.
+        """
         self._ensure_sandbox()
         assert self._client is not None
 
@@ -218,14 +237,17 @@ class KubernetesSandbox(BaseSandbox):
                 results.append(FileDownloadResponse(path=path, content=None, error=error))
                 continue
             try:
-                content = self._client.read(path)
-                results.append(FileDownloadResponse(path=path, content=content, error=None))
-            except FileNotFoundError:
-                results.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
-            except PermissionError:
-                results.append(FileDownloadResponse(path=path, content=None, error="permission_denied"))
-            except IsADirectoryError:
-                results.append(FileDownloadResponse(path=path, content=None, error="is_directory"))
+                escaped_path = shlex.quote(path)
+                resp = self._run_raw(f"base64 {escaped_path}")
+                if resp.exit_code != 0:
+                    results.append(
+                        FileDownloadResponse(
+                            path=path, content=None, error=_classify_error(resp.output)
+                        )
+                    )
+                else:
+                    content = base64.b64decode(resp.output.strip())
+                    results.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:
                 logger.warning("download_files failed for %s: %s", path, exc)
                 results.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
@@ -234,9 +256,21 @@ class KubernetesSandbox(BaseSandbox):
     # -- Internals -------------------------------------------------------------
 
     def _run(self, command: str) -> ExecuteResponse:
-        """Execute via SDK and map to ``ExecuteResponse``."""
+        """Execute a user command wrapped in ``sh -c`` and map to ``ExecuteResponse``.
+
+        The sandbox runtime's ``/execute`` endpoint runs commands directly
+        without a shell, so pipes (``|``), redirects (``>``), and chaining
+        (``&&``) would be interpreted literally.  Wrapping in ``sh -c``
+        ensures full POSIX shell semantics.
+        """
+        resp = self._run_raw(command)
+        return resp
+
+    def _run_raw(self, command: str) -> ExecuteResponse:
+        """Low-level execute via SDK: wraps in ``sh -c`` and maps result."""
         assert self._client is not None
-        result = self._client.run(command, timeout=self._command_timeout)
+        shell_cmd = f"sh -c {shlex.quote(command)}"
+        result = self._client.run(shell_cmd, timeout=self._command_timeout)
 
         parts: list[str] = []
         if result.stdout:
@@ -303,3 +337,16 @@ def _validate_path(path: str) -> FileOperationError | None:
     if not path or not path.startswith("/"):
         return "invalid_path"
     return None
+
+
+def _classify_error(output: str) -> FileOperationError:
+    """Map stderr/output text from a failed shell command to a ``FileOperationError``."""
+    lower = output.lower()
+    if "permission denied" in lower:
+        return "permission_denied"
+    if "is a directory" in lower:
+        return "is_directory"
+    if "no such file or directory" in lower:
+        return "file_not_found"
+    # Default — could be a missing parent directory or other path issue.
+    return "file_not_found"
