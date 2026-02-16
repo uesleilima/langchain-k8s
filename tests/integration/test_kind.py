@@ -2,22 +2,27 @@
 
 Prerequisites
 -------------
-1. A Kind cluster running with agent-sandbox controller installed.
-2. ``sandbox-router`` deployed and accessible.
-3. ``python-runtime-sandbox:latest`` image loaded into Kind.
-4. A ``SandboxTemplate`` named ``python-sandbox-template`` applied in
-   the ``agent-sandbox-system`` namespace.
+Run the setup script first::
 
-Run with::
+    ./scripts/kind-setup.sh
+
+This creates a Kind cluster named ``langchain-k8s`` with:
+
+1. agent-sandbox controller + extension CRDs
+2. sandbox-router deployment
+3. ``python-runtime-sandbox`` image loaded into Kind
+4. ``python-sandbox-template`` SandboxTemplate
+
+Run tests::
 
     uv run pytest tests/integration/ -v -m integration
 
-Skip in CI / local development without a cluster::
-
-    uv run pytest -m "not integration"
+Tests are automatically skipped when no Kind cluster is detected.
 """
 
 from __future__ import annotations
+
+from collections.abc import Generator
 
 import pytest
 
@@ -30,7 +35,7 @@ NAMESPACE = "agent-sandbox-system"
 
 
 @pytest.fixture()
-def sandbox() -> KubernetesSandbox:
+def sandbox() -> Generator[KubernetesSandbox]:
     """Provide a sandbox connected to Kind via auto-tunnel."""
     sb = KubernetesSandbox(
         template_name=TEMPLATE,
@@ -57,8 +62,13 @@ class TestBasicExecution:
         assert resp.exit_code == 0
         assert "Python" in resp.output
 
+    def test_python_script(self, sandbox: KubernetesSandbox) -> None:
+        resp = sandbox.execute("python3 -c \"print(2 + 2)\"")
+        assert resp.exit_code == 0
+        assert "4" in resp.output
+
     def test_failed_command(self, sandbox: KubernetesSandbox) -> None:
-        resp = sandbox.execute("exit 42")
+        resp = sandbox.execute("sh -c 'exit 42'")
         assert resp.exit_code == 42
 
     def test_command_chaining(self, sandbox: KubernetesSandbox) -> None:
@@ -71,6 +81,11 @@ class TestBasicExecution:
         resp = sandbox.execute("echo 'hello world' | wc -w")
         assert resp.exit_code == 0
         assert "2" in resp.output
+
+    def test_nonexistent_command(self, sandbox: KubernetesSandbox) -> None:
+        resp = sandbox.execute("this_command_does_not_exist_xyz 2>&1 || true")
+        # The command itself fails, but the shell wrapper succeeds
+        assert resp.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +119,18 @@ class TestFileOperations:
         results = sandbox.download_files(["/tmp/roundtrip.bin"])
         assert results[0].content == original
 
+    def test_upload_multiple(self, sandbox: KubernetesSandbox) -> None:
+        files = [
+            ("/tmp/multi-a.txt", b"aaa"),
+            ("/tmp/multi-b.txt", b"bbb"),
+        ]
+        results = sandbox.upload_files(files)
+        assert all(r.error is None for r in results)
+
+        resp = sandbox.execute("cat /tmp/multi-a.txt /tmp/multi-b.txt")
+        assert "aaa" in resp.output
+        assert "bbb" in resp.output
+
 
 # ---------------------------------------------------------------------------
 # Lifecycle
@@ -118,13 +145,20 @@ class TestLifecycle:
         assert not sb._started
 
     def test_reuse_sandbox_true_same_pod(self) -> None:
+        """Persistent mode: files survive across execute() calls (same pod)."""
         with KubernetesSandbox(
             template_name=TEMPLATE,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         ) as sb:
-            # Create a file
             sb.execute("echo 'marker' > /tmp/reuse-test.txt")
-            # It should still exist on next call (same pod)
             resp = sb.execute("cat /tmp/reuse-test.txt")
             assert "marker" in resp.output
+
+    def test_explicit_start_stop(self) -> None:
+        sb = KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE)
+        sb.start()
+        resp = sb.execute("echo 'started'")
+        assert resp.exit_code == 0
+        sb.stop()
+        assert not sb._started

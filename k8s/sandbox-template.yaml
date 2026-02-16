@@ -1,0 +1,48 @@
+# SandboxTemplate — defines the pod spec for Python sandbox instances.
+# Used by SandboxClient to create SandboxClaims.
+#
+# The python-runtime-sandbox image provides:
+#   - Python 3 with pip
+#   - A lightweight HTTP server on port 8888 for command execution,
+#     file upload/download, and health checks
+#
+# For Kind clusters the gVisor runtimeClassName is omitted because
+# Kind nodes use the default runc runtime.  Add it back for
+# production clusters that have gVisor installed.
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: python-sandbox-template
+  namespace: agent-sandbox-system
+spec:
+  podTemplate:
+    metadata:
+      labels:
+        app: python-sandbox
+    spec:
+      # Uncomment below for clusters with gVisor support:
+      # runtimeClassName: gvisor
+      containers:
+        - name: python-runtime
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8888
+          readinessProbe:
+            httpGet:
+              path: "/"
+              port: 8888
+            initialDelaySeconds: 0
+            periodSeconds: 1
+          livenessProbe:
+            httpGet:
+              path: "/"
+              port: 8888
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 512Mi
+      restartPolicy: OnFailure

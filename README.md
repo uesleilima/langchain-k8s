@@ -181,9 +181,37 @@ uv run pytest tests/unit/ -v
 # Lint and type check
 uv run ruff check src/ tests/
 uv run mypy src/
+```
 
-# Integration tests (requires Kind cluster with agent-sandbox)
+### Integration tests with Kind
+
+Integration tests require a Kubernetes cluster. The repository includes scripts and manifests to set up a [Kind](https://kind.sigs.k8s.io/) cluster with everything needed.
+
+**Prerequisites**: `kind`, `kubectl`, `docker`
+
+```bash
+# Create the Kind cluster and deploy agent-sandbox components
+./scripts/kind-setup.sh
+
+# Run integration tests
 uv run pytest tests/integration/ -v -m integration
+
+# Tear down when done
+./scripts/kind-teardown.sh
+```
+
+The setup script will:
+
+1. Create a Kind cluster named `langchain-k8s`
+2. Install the agent-sandbox controller and extension CRDs (v0.1.1)
+3. Enable the extensions controller
+4. Deploy the sandbox router
+6. Apply the `python-sandbox-template` SandboxTemplate
+
+```
+k8s/
+├── sandbox-router.yaml            # Router Deployment + Service
+└── sandbox-template.yaml          # SandboxTemplate for Python runtime
 ```
 
 ## License
