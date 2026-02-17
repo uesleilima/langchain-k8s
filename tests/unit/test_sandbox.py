@@ -546,6 +546,112 @@ class TestThreadSafety:
             assert enter_count == 1
             sb.stop()
 
+    def test_sequential_execute_reuses_sandbox(self) -> None:
+        """Multiple sequential execute() calls reuse the same sandbox."""
+        mock = make_mock_client()
+        call_count = 0
+
+        def counting_run(cmd: str, timeout: int = 60) -> FakeExecutionResult:
+            nonlocal call_count
+            call_count += 1
+            return FakeExecutionResult(stdout=f"call-{call_count}", exit_code=0)
+
+        mock.run = counting_run
+
+        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n")
+            r1 = sb.execute("echo 1")
+            r2 = sb.execute("echo 2")
+            r3 = sb.execute("echo 3")
+            assert r1.output == "call-1"
+            assert r2.output == "call-2"
+            assert r3.output == "call-3"
+            # __enter__ called only once
+            mock.__enter__.assert_called_once()
+            sb.stop()
+
+    def test_concurrent_mixed_operations_start_once(self) -> None:
+        """execute(), upload_files(), download_files() all lazy-init the same sandbox."""
+        import base64 as b64
+
+        mock = make_mock_client(
+            run_result=FakeExecutionResult(
+                stdout=b64.b64encode(b"data").decode() + "\n", exit_code=0
+            )
+        )
+        enter_count = 0
+        original_enter = mock.__enter__
+
+        def counting_enter(*args: object) -> MagicMock:
+            nonlocal enter_count
+            enter_count += 1
+            return original_enter(*args)
+
+        mock.__enter__ = counting_enter
+
+        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n")
+            errors: list[Exception] = []
+
+            def exec_worker() -> None:
+                try:
+                    sb.execute("echo mixed")
+                except Exception as e:
+                    errors.append(e)
+
+            def upload_worker() -> None:
+                try:
+                    sb.upload_files([("/tmp/test.txt", b"content")])
+                except Exception as e:
+                    errors.append(e)
+
+            def download_worker() -> None:
+                try:
+                    sb.download_files(["/tmp/test.txt"])
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [
+                threading.Thread(target=exec_worker),
+                threading.Thread(target=exec_worker),
+                threading.Thread(target=upload_worker),
+                threading.Thread(target=upload_worker),
+                threading.Thread(target=download_worker),
+                threading.Thread(target=download_worker),
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert not errors
+            assert enter_count == 1
+            sb.stop()
+
+    def test_concurrent_stop_is_safe(self) -> None:
+        """Multiple threads calling stop() concurrently doesn't double-destroy."""
+        mock = make_mock_client()
+        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb.start()
+            errors: list[Exception] = []
+
+            def stop_worker() -> None:
+                try:
+                    sb.stop()
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=stop_worker) for _ in range(10)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert not errors
+            assert not sb._started
+            mock.__exit__.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # Client creation kwargs

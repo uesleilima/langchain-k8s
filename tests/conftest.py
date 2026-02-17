@@ -9,6 +9,16 @@ import pytest
 
 from langchain_k8s import KubernetesSandbox
 
+from typing import Any
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+
+
+class FakeToolModel(FakeMessagesListChatModel):
+    """``FakeMessagesListChatModel`` with a no-op ``bind_tools``."""
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeToolModel":  # noqa: ARG002
+        return self
+
 
 @dataclass
 class FakeExecutionResult:
