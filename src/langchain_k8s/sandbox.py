@@ -121,6 +121,16 @@ class KubernetesSandbox(BaseSandbox):
         self._lock = threading.Lock()
         self._started = False
 
+        logger.debug(
+            "KubernetesSandbox created: id=%s template=%s namespace=%s "
+            "reuse=%s mode=%s",
+            self._id,
+            self._template_name,
+            self._namespace,
+            self._reuse_sandbox,
+            "gateway" if gateway_name else ("api_url" if api_url else "tunnel"),
+        )
+
     # -- BaseSandbox abstract property -----------------------------------------
 
     @property
@@ -165,19 +175,40 @@ class KubernetesSandbox(BaseSandbox):
         (``reuse_sandbox=True``) a connection error triggers one automatic
         reconnect attempt.
         """
+        logger.debug("execute: sandbox=%s command=%r", self.id, command)
         self._ensure_sandbox()
         assert self._client is not None  # ensured by _ensure_sandbox
 
         try:
-            return self._run(command)
-        except Exception:
+            resp = self._run(command)
+        except Exception as exc:
             if self._reuse_sandbox:
-                logger.warning("Sandbox connection lost — reconnecting")
+                logger.warning(
+                    "execute: sandbox=%s connection lost (%s) — reconnecting",
+                    self.id,
+                    exc,
+                )
                 self._destroy_sandbox()
                 self._ensure_sandbox()
                 assert self._client is not None
-                return self._run(command)
-            raise
+                resp = self._run(command)
+            else:
+                logger.debug(
+                    "execute: sandbox=%s command failed (reuse_sandbox=False, "
+                    "not retrying): %s",
+                    self.id,
+                    exc,
+                )
+                raise
+
+        logger.debug(
+            "execute: sandbox=%s exit_code=%d output_len=%d truncated=%s",
+            self.id,
+            resp.exit_code,
+            len(resp.output),
+            resp.truncated,
+        )
+        return resp
 
     def upload_files(
         self,
@@ -189,6 +220,11 @@ class KubernetesSandbox(BaseSandbox):
         directory and ignores the full path.  To write to arbitrary absolute
         paths we encode the content as base64 and pipe it through the shell.
         """
+        logger.debug(
+            "upload_files: sandbox=%s file_count=%d",
+            self.id,
+            len(files),
+        )
         self._ensure_sandbox()
         assert self._client is not None
 
@@ -196,6 +232,7 @@ class KubernetesSandbox(BaseSandbox):
         for path, content in files:
             error = _validate_path(path)
             if error is not None:
+                logger.debug("upload_files: invalid path %r", path)
                 results.append(FileUploadResponse(path=path, error=error))
                 continue
             try:
@@ -207,13 +244,26 @@ class KubernetesSandbox(BaseSandbox):
                 )
                 resp = self._run_raw(cmd)
                 if resp.exit_code != 0:
+                    file_error = _classify_error(resp.output)
+                    logger.debug(
+                        "upload_files: sandbox=%s path=%s failed (%s)",
+                        self.id,
+                        path,
+                        file_error,
+                    )
                     results.append(
-                        FileUploadResponse(path=path, error=_classify_error(resp.output))
+                        FileUploadResponse(path=path, error=file_error)
                     )
                 else:
+                    logger.debug(
+                        "upload_files: sandbox=%s path=%s size=%d OK",
+                        self.id,
+                        path,
+                        len(content),
+                    )
                     results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
-                logger.warning("upload_files failed for %s: %s", path, exc)
+                logger.warning("upload_files: sandbox=%s path=%s exception: %s", self.id, path, exc)
                 results.append(FileUploadResponse(path=path, error="invalid_path"))
         return results
 
@@ -227,6 +277,11 @@ class KubernetesSandbox(BaseSandbox):
         the leading ``/`` of absolute paths.  To reliably read arbitrary files
         we base64-encode on the sandbox and decode locally.
         """
+        logger.debug(
+            "download_files: sandbox=%s file_count=%d",
+            self.id,
+            len(paths),
+        )
         self._ensure_sandbox()
         assert self._client is not None
 
@@ -234,22 +289,36 @@ class KubernetesSandbox(BaseSandbox):
         for path in paths:
             error = _validate_path(path)
             if error is not None:
+                logger.debug("download_files: invalid path %r", path)
                 results.append(FileDownloadResponse(path=path, content=None, error=error))
                 continue
             try:
                 escaped_path = shlex.quote(path)
                 resp = self._run_raw(f"base64 {escaped_path}")
                 if resp.exit_code != 0:
+                    file_error = _classify_error(resp.output)
+                    logger.debug(
+                        "download_files: sandbox=%s path=%s failed (%s)",
+                        self.id,
+                        path,
+                        file_error,
+                    )
                     results.append(
                         FileDownloadResponse(
-                            path=path, content=None, error=_classify_error(resp.output)
+                            path=path, content=None, error=file_error
                         )
                     )
                 else:
                     content = base64.b64decode(resp.output.strip())
+                    logger.debug(
+                        "download_files: sandbox=%s path=%s size=%d OK",
+                        self.id,
+                        path,
+                        len(content),
+                    )
                     results.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:
-                logger.warning("download_files failed for %s: %s", path, exc)
+                logger.warning("download_files: sandbox=%s path=%s exception: %s", self.id, path, exc)
                 results.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
         return results
 
@@ -270,6 +339,7 @@ class KubernetesSandbox(BaseSandbox):
         """Low-level execute via SDK: wraps in ``sh -c`` and maps result."""
         assert self._client is not None
         shell_cmd = f"sh -c {shlex.quote(command)}"
+        logger.debug("_run_raw: sandbox=%s shell_cmd=%r", self.id, shell_cmd)
         result = self._client.run(shell_cmd, timeout=self._command_timeout)
 
         parts: list[str] = []
@@ -281,6 +351,12 @@ class KubernetesSandbox(BaseSandbox):
 
         truncated = len(output) > self._max_output_size
         if truncated:
+            logger.debug(
+                "_run_raw: sandbox=%s output truncated from %d to %d bytes",
+                self.id,
+                len(output),
+                self._max_output_size,
+            )
             output = output[: self._max_output_size]
 
         return ExecuteResponse(
@@ -329,6 +405,7 @@ class KubernetesSandbox(BaseSandbox):
             kwargs["gateway_namespace"] = self._gateway_namespace
         if self._api_url is not None:
             kwargs["api_url"] = self._api_url
+        logger.debug("_create_client: kwargs=%s", kwargs)
         return _SandboxClient(**kwargs)
 
 
