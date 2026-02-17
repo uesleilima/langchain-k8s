@@ -17,8 +17,14 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 
+from langchain_k8s.proxy import patch_k8s_proxy_config
+
 if TYPE_CHECKING:
     from agentic_sandbox import SandboxClient
+
+# Apply the NO_PROXY monkey-patch once at import time so that all
+# kubernetes client instances created in this process honour NO_PROXY.
+patch_k8s_proxy_config()
 
 logger = logging.getLogger(__name__)
 
