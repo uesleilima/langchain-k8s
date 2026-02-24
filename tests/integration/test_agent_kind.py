@@ -45,18 +45,22 @@ class TestDeepAgentExecute:
 
     def test_agent_execute_echo(self) -> None:
         """Agent calls execute(echo) and receives the output."""
-        model = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo 'hello from agent'"},
-                    "id": "call_echo",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="The sandbox said hello."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo 'hello from agent'"},
+                            "id": "call_echo",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="The sandbox said hello."),
+            ]
+        )
 
         with KubernetesSandbox(
             template_name=TEMPLATE,
@@ -66,9 +70,7 @@ class TestDeepAgentExecute:
                 model,
                 middleware=[FilesystemMiddleware(backend=backend)],
             )
-            result = agent.invoke(
-                {"messages": [HumanMessage(content="Run echo")]}
-            )
+            result = agent.invoke({"messages": [HumanMessage(content="Run echo")]})
 
         messages = result["messages"]
         assert len(messages) == 4
@@ -79,18 +81,22 @@ class TestDeepAgentExecute:
 
     def test_agent_execute_python(self) -> None:
         """Agent runs a Python one-liner in the sandbox."""
-        model = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "python3 -c \"print(2 + 2)\""},
-                    "id": "call_py",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Python computed 4."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": 'python3 -c "print(2 + 2)"'},
+                            "id": "call_py",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Python computed 4."),
+            ]
+        )
 
         with KubernetesSandbox(
             template_name=TEMPLATE,
@@ -100,9 +106,7 @@ class TestDeepAgentExecute:
                 model,
                 middleware=[FilesystemMiddleware(backend=backend)],
             )
-            result = agent.invoke(
-                {"messages": [HumanMessage(content="Compute 2+2 with Python")]}
-            )
+            result = agent.invoke({"messages": [HumanMessage(content="Compute 2+2 with Python")]})
 
         tool_msg = result["messages"][2]
         assert isinstance(tool_msg, ToolMessage)
@@ -111,18 +115,22 @@ class TestDeepAgentExecute:
 
     def test_agent_execute_failed_command(self) -> None:
         """Agent receives non-zero exit code when command fails."""
-        model = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "ls /no_such_directory_xyz"},
-                    "id": "call_fail",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="The directory does not exist."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "ls /no_such_directory_xyz"},
+                            "id": "call_fail",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="The directory does not exist."),
+            ]
+        )
 
         with KubernetesSandbox(
             template_name=TEMPLATE,
@@ -132,9 +140,7 @@ class TestDeepAgentExecute:
                 model,
                 middleware=[FilesystemMiddleware(backend=backend)],
             )
-            result = agent.invoke(
-                {"messages": [HumanMessage(content="List a bad dir")]}
-            )
+            result = agent.invoke({"messages": [HumanMessage(content="List a bad dir")]})
 
         tool_msg = result["messages"][2]
         assert isinstance(tool_msg, ToolMessage)
@@ -143,29 +149,35 @@ class TestDeepAgentExecute:
 
     def test_agent_multi_step_execute(self) -> None:
         """Agent makes two sequential execute calls — state persists across them."""
-        model = FakeToolModel(responses=[
-            # Step 1: write a file
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo 'agent-data' > /tmp/agent-test.txt"},
-                    "id": "call_write",
-                    "type": "tool_call",
-                }],
-            ),
-            # Step 2: read it back
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "cat /tmp/agent-test.txt"},
-                    "id": "call_read",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="File contains agent-data."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                # Step 1: write a file
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo 'agent-data' > /tmp/agent-test.txt"},
+                            "id": "call_write",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                # Step 2: read it back
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "cat /tmp/agent-test.txt"},
+                            "id": "call_read",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="File contains agent-data."),
+            ]
+        )
 
         with KubernetesSandbox(
             template_name=TEMPLATE,
@@ -175,9 +187,7 @@ class TestDeepAgentExecute:
                 model,
                 middleware=[FilesystemMiddleware(backend=backend)],
             )
-            result = agent.invoke(
-                {"messages": [HumanMessage(content="Write and read a file")]}
-            )
+            result = agent.invoke({"messages": [HumanMessage(content="Write and read a file")]})
 
         messages = result["messages"]
         # Human → AI(tool) → Tool → AI(tool) → Tool → AI(final) = 6
@@ -193,29 +203,35 @@ class TestDeepAgentFileOps:
 
     def test_agent_execute_and_read_file(self) -> None:
         """Agent creates a file via execute, then reads it with read_file."""
-        model = FakeToolModel(responses=[
-            # Step 1: create the file via execute
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo -n 'hello agent' > /tmp/read-test.txt"},
-                    "id": "call_create",
-                    "type": "tool_call",
-                }],
-            ),
-            # Step 2: read it via read_file (goes through backend.read → download_files)
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "read_file",
-                    "args": {"file_path": "/tmp/read-test.txt"},
-                    "id": "call_read",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Done reading the file."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                # Step 1: create the file via execute
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo -n 'hello agent' > /tmp/read-test.txt"},
+                            "id": "call_create",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                # Step 2: read it via read_file (goes through backend.read → download_files)
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "read_file",
+                            "args": {"file_path": "/tmp/read-test.txt"},
+                            "id": "call_read",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done reading the file."),
+            ]
+        )
 
         with KubernetesSandbox(
             template_name=TEMPLATE,
@@ -225,9 +241,7 @@ class TestDeepAgentFileOps:
                 model,
                 middleware=[FilesystemMiddleware(backend=backend)],
             )
-            result = agent.invoke(
-                {"messages": [HumanMessage(content="Create and read a file")]}
-            )
+            result = agent.invoke({"messages": [HumanMessage(content="Create and read a file")]})
 
         messages = result["messages"]
         assert len(messages) == 6
@@ -241,9 +255,11 @@ class TestDeepAgentLifecycle:
 
     def test_sandbox_not_started_until_tool_call(self) -> None:
         """If the agent never calls a tool, the sandbox is never created."""
-        model = FakeToolModel(responses=[
-            AIMessage(content="No tools needed, just a plain answer."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(content="No tools needed, just a plain answer."),
+            ]
+        )
 
         backend = KubernetesSandbox(
             template_name=TEMPLATE,
@@ -254,27 +270,29 @@ class TestDeepAgentLifecycle:
             model,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Just answer without tools")]}
-        )
+        result = agent.invoke({"messages": [HumanMessage(content="Just answer without tools")]})
 
         assert not backend._started
         assert "No tools needed" in result["messages"][-1].content
 
     def test_sandbox_lazy_started_by_agent(self) -> None:
         """The sandbox is lazily created when the agent's first tool call arrives."""
-        model = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo lazy-start"},
-                    "id": "call_lazy",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Done."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo lazy-start"},
+                            "id": "call_lazy",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
 
         backend = KubernetesSandbox(
             template_name=TEMPLATE,
@@ -286,9 +304,7 @@ class TestDeepAgentLifecycle:
             model,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Run something")]}
-        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run something")]})
 
         assert backend._started
         tool_msg = result["messages"][2]
@@ -308,47 +324,51 @@ class TestDeepAgentLifecycle:
         )
 
         # First invocation: write a marker file
-        model_1 = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo 'invoke-1-marker' > /tmp/multi-invoke.txt"},
-                    "id": "call_w",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Written."),
-        ])
+        model_1 = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo 'invoke-1-marker' > /tmp/multi-invoke.txt"},
+                            "id": "call_w",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Written."),
+            ]
+        )
         agent_1 = create_agent(
             model_1,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        agent_1.invoke(
-            {"messages": [HumanMessage(content="Write marker")]}
-        )
+        agent_1.invoke({"messages": [HumanMessage(content="Write marker")]})
         sandbox_id_after_first = backend.id
 
         # Second invocation: read it back — same pod, file still there
-        model_2 = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "cat /tmp/multi-invoke.txt"},
-                    "id": "call_r",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Read it."),
-        ])
+        model_2 = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "cat /tmp/multi-invoke.txt"},
+                            "id": "call_r",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Read it."),
+            ]
+        )
         agent_2 = create_agent(
             model_2,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        result_2 = agent_2.invoke(
-            {"messages": [HumanMessage(content="Read marker")]}
-        )
+        result_2 = agent_2.invoke({"messages": [HumanMessage(content="Read marker")]})
 
         # Same pod was reused
         assert backend.id == sandbox_id_after_first
@@ -365,38 +385,40 @@ class TestDeepAgentLifecycle:
         )
 
         # First invocation: no tool calls
-        model_1 = FakeToolModel(responses=[
-            AIMessage(content="I can answer this without tools."),
-        ])
+        model_1 = FakeToolModel(
+            responses=[
+                AIMessage(content="I can answer this without tools."),
+            ]
+        )
         agent_1 = create_agent(
             model_1,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        agent_1.invoke(
-            {"messages": [HumanMessage(content="What is 1+1?")]}
-        )
+        agent_1.invoke({"messages": [HumanMessage(content="What is 1+1?")]})
         assert not backend._started
 
         # Second invocation: now the agent calls execute — lazy start happens here
-        model_2 = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo 'deferred-start'"},
-                    "id": "call_deferred",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Done."),
-        ])
+        model_2 = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo 'deferred-start'"},
+                            "id": "call_deferred",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
         agent_2 = create_agent(
             model_2,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        result_2 = agent_2.invoke(
-            {"messages": [HumanMessage(content="Now run something")]}
-        )
+        result_2 = agent_2.invoke({"messages": [HumanMessage(content="Now run something")]})
 
         assert backend._started
         tool_msg = result_2["messages"][2]
@@ -414,25 +436,27 @@ class TestDeepAgentLifecycle:
         sandbox_id_before = backend.id
         assert backend._started
 
-        model = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo 'pre-warmed'"},
-                    "id": "call_warm",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Done."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo 'pre-warmed'"},
+                            "id": "call_warm",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
         agent = create_agent(
             model,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Run on pre-warmed pod")]}
-        )
+        result = agent.invoke({"messages": [HumanMessage(content="Run on pre-warmed pod")]})
 
         # Same sandbox — no second pod was created
         assert backend.id == sandbox_id_before
@@ -454,25 +478,27 @@ class TestDeepAgentLifecycle:
 
         def agent_worker(idx: int) -> None:
             try:
-                model = FakeToolModel(responses=[
-                    AIMessage(
-                        content="",
-                        tool_calls=[{
-                            "name": "execute",
-                            "args": {"command": f"echo 'agent-{idx}'"},
-                            "id": f"call_{idx}",
-                            "type": "tool_call",
-                        }],
-                    ),
-                    AIMessage(content=f"Agent {idx} done."),
-                ])
+                model = FakeToolModel(
+                    responses=[
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": f"echo 'agent-{idx}'"},
+                                    "id": f"call_{idx}",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content=f"Agent {idx} done."),
+                    ]
+                )
                 agent = create_agent(
                     model,
                     middleware=[FilesystemMiddleware(backend=backend)],
                 )
-                result = agent.invoke(
-                    {"messages": [HumanMessage(content=f"Agent {idx} task")]}
-                )
+                result = agent.invoke({"messages": [HumanMessage(content=f"Agent {idx} task")]})
                 tool_msg = result["messages"][2]
                 assert isinstance(tool_msg, ToolMessage)
                 results[idx] = tool_msg.content
@@ -498,31 +524,37 @@ class TestDeepAgentLifecycle:
 
         def agent_worker(idx: int) -> None:
             try:
-                model = FakeToolModel(responses=[
-                    # Write a unique marker
-                    AIMessage(
-                        content="",
-                        tool_calls=[{
-                            "name": "execute",
-                            "args": {
-                                "command": f"echo 'isolated-{idx}' > /tmp/iso.txt",
-                            },
-                            "id": f"call_w_{idx}",
-                            "type": "tool_call",
-                        }],
-                    ),
-                    # Read it back to verify isolation
-                    AIMessage(
-                        content="",
-                        tool_calls=[{
-                            "name": "execute",
-                            "args": {"command": "cat /tmp/iso.txt"},
-                            "id": f"call_r_{idx}",
-                            "type": "tool_call",
-                        }],
-                    ),
-                    AIMessage(content=f"Agent {idx} confirmed."),
-                ])
+                model = FakeToolModel(
+                    responses=[
+                        # Write a unique marker
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {
+                                        "command": f"echo 'isolated-{idx}' > /tmp/iso.txt",
+                                    },
+                                    "id": f"call_w_{idx}",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        # Read it back to verify isolation
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "execute",
+                                    "args": {"command": "cat /tmp/iso.txt"},
+                                    "id": f"call_r_{idx}",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content=f"Agent {idx} confirmed."),
+                    ]
+                )
 
                 with KubernetesSandbox(
                     template_name=TEMPLATE,
@@ -532,9 +564,7 @@ class TestDeepAgentLifecycle:
                         model,
                         middleware=[FilesystemMiddleware(backend=backend)],
                     )
-                    result = agent.invoke(
-                        {"messages": [HumanMessage(content=f"Isolated task {idx}")]}
-                    )
+                    result = agent.invoke({"messages": [HumanMessage(content=f"Isolated task {idx}")]})
                     sandbox_ids[idx] = backend.id
 
                     # The read result should contain only this agent's marker
@@ -554,9 +584,7 @@ class TestDeepAgentLifecycle:
         assert len(sandbox_ids) == 3
         # All sandbox IDs should be unique (different pods)
         unique_ids = set(sandbox_ids.values())
-        assert len(unique_ids) == 3, (
-            f"Expected 3 unique sandbox ids, got {len(unique_ids)}: {sandbox_ids}"
-        )
+        assert len(unique_ids) == 3, f"Expected 3 unique sandbox ids, got {len(unique_ids)}: {sandbox_ids}"
 
     def test_stop_and_reinvoke_creates_new_pod(self) -> None:
         """Stopping a backend and invoking again creates a fresh pod."""
@@ -567,25 +595,27 @@ class TestDeepAgentLifecycle:
         )
 
         # First invocation
-        model_1 = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "echo 'first-pod' > /tmp/pod-marker.txt"},
-                    "id": "call_1",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Written."),
-        ])
+        model_1 = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo 'first-pod' > /tmp/pod-marker.txt"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Written."),
+            ]
+        )
         agent_1 = create_agent(
             model_1,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        agent_1.invoke(
-            {"messages": [HumanMessage(content="Write marker")]}
-        )
+        agent_1.invoke({"messages": [HumanMessage(content="Write marker")]})
         first_id = backend.id
         assert backend._started
 
@@ -594,25 +624,27 @@ class TestDeepAgentLifecycle:
         assert not backend._started
 
         # Second invocation — should lazy-start a new pod
-        model_2 = FakeToolModel(responses=[
-            AIMessage(
-                content="",
-                tool_calls=[{
-                    "name": "execute",
-                    "args": {"command": "cat /tmp/pod-marker.txt 2>&1 || echo 'GONE'"},
-                    "id": "call_2",
-                    "type": "tool_call",
-                }],
-            ),
-            AIMessage(content="Checked."),
-        ])
+        model_2 = FakeToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "cat /tmp/pod-marker.txt 2>&1 || echo 'GONE'"},
+                            "id": "call_2",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Checked."),
+            ]
+        )
         agent_2 = create_agent(
             model_2,
             middleware=[FilesystemMiddleware(backend=backend)],
         )
-        result_2 = agent_2.invoke(
-            {"messages": [HumanMessage(content="Read marker on new pod")]}
-        )
+        result_2 = agent_2.invoke({"messages": [HumanMessage(content="Read marker on new pod")]})
 
         # New pod — different ID, file should not exist
         assert backend._started

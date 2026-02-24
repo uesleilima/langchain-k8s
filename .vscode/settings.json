@@ -1,0 +1,23 @@
+{
+    "editor.formatOnSave": true,
+    "ruff.nativeServer": "on",
+    "ruff.configuration": "${workspaceFolder}/pyproject.toml",
+    "black-formatter.enabled": false,
+    "isort.enabled": false,
+    "flake8.enabled": false,
+    "pylint.enabled": false,
+    "mypy-type-checker.enabled": false,
+    "[python]": {
+        "editor.defaultFormatter": "charliermarsh.ruff",
+        "editor.codeActionsOnSave": {
+            "source.fixAll.ruff": "explicit",
+            "source.organizeImports.ruff": "explicit"
+        },
+        "editor.formatOnSave": true
+    },
+    "python.testing.pytestArgs": [
+        "tests"
+    ],
+    "python.testing.unittestEnabled": false,
+    "python.testing.pytestEnabled": true
+}

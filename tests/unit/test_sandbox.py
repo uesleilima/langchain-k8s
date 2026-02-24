@@ -27,7 +27,7 @@ def _make_sandbox(**overrides: object) -> tuple[KubernetesSandbox, MagicMock]:
         "namespace": "test-ns",
     }
     defaults.update(overrides)  # type: ignore[arg-type]
-    with patch("agentic_sandbox.SandboxClient", return_value=mock_client):
+    with patch("k8s_agent_sandbox.SandboxClient", return_value=mock_client):
         sb = KubernetesSandbox(**defaults)  # type: ignore[arg-type]
     return sb, mock_client
 
@@ -76,7 +76,7 @@ class TestId:
 
     def test_id_after_start_returns_claim_name(self) -> None:
         mock = make_mock_client(claim_name="my-claim-123")
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             assert sb.id == "my-claim-123"
@@ -95,7 +95,7 @@ class TestId:
 class TestLifecycle:
     def test_start_creates_client(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             assert sb._started
@@ -105,7 +105,7 @@ class TestLifecycle:
 
     def test_start_is_idempotent(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             sb.start()  # second call should be no-op
@@ -114,7 +114,7 @@ class TestLifecycle:
 
     def test_stop_destroys_sandbox(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             sb.stop()
@@ -124,7 +124,7 @@ class TestLifecycle:
 
     def test_stop_is_idempotent(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             sb.stop()
@@ -133,7 +133,7 @@ class TestLifecycle:
 
     def test_context_manager(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             with KubernetesSandbox(template_name="t", namespace="n") as sb:
                 assert sb._started
             assert not sb._started
@@ -143,7 +143,7 @@ class TestLifecycle:
     def test_stop_tolerates_exit_errors(self) -> None:
         mock = make_mock_client()
         mock.__exit__.side_effect = RuntimeError("cleanup boom")
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             sb.stop()  # should not raise
@@ -158,7 +158,7 @@ class TestLifecycle:
 class TestExecute:
     def test_basic_execute(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="hello\n", exit_code=0))
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             resp = sb.execute("echo hello")
             assert isinstance(resp, ExecuteResponse)
@@ -168,10 +168,8 @@ class TestExecute:
             sb.stop()
 
     def test_execute_combines_stdout_stderr(self) -> None:
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(stdout="out", stderr="err", exit_code=1)
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout="out", stderr="err", exit_code=1))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             resp = sb.execute("bad-cmd")
             assert "out" in resp.output
@@ -180,10 +178,8 @@ class TestExecute:
             sb.stop()
 
     def test_execute_only_stderr(self) -> None:
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(stdout="", stderr="error msg", exit_code=2)
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout="", stderr="error msg", exit_code=2))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             resp = sb.execute("fail")
             assert resp.output == "error msg"
@@ -191,10 +187,8 @@ class TestExecute:
 
     def test_execute_truncation(self) -> None:
         big_output = "x" * 2000
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(stdout=big_output, exit_code=0)
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout=big_output, exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", max_output_size=100)
             resp = sb.execute("big")
             assert resp.truncated is True
@@ -202,10 +196,8 @@ class TestExecute:
             sb.stop()
 
     def test_execute_no_truncation_when_under_limit(self) -> None:
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(stdout="short", exit_code=0)
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout="short", exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", max_output_size=100)
             resp = sb.execute("short")
             assert resp.truncated is False
@@ -213,7 +205,7 @@ class TestExecute:
 
     def test_execute_lazy_starts_sandbox(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             assert not sb._started
             sb.execute("echo lazy")
@@ -222,7 +214,7 @@ class TestExecute:
 
     def test_execute_passes_timeout(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", command_timeout=42)
             sb.execute("echo hi")
             mock.run.assert_called_once_with("sh -c 'echo hi'", timeout=42)
@@ -247,7 +239,7 @@ class TestAutoReconnect:
             return FakeExecutionResult(stdout="recovered", exit_code=0)
 
         mock.run = flaky_run
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=True)
             resp = sb.execute("cmd")
             assert resp.output == "recovered"
@@ -256,7 +248,7 @@ class TestAutoReconnect:
     def test_no_reconnect_when_reuse_false(self) -> None:
         mock = make_mock_client()
         mock.run.side_effect = ConnectionError("sandbox died")
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=False)
             with pytest.raises(ConnectionError, match="sandbox died"):
                 sb.execute("cmd")
@@ -271,7 +263,7 @@ class TestAutoReconnect:
 class TestUploadFiles:
     def test_upload_single_file(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/tmp/hello.txt", b"world")])
             assert len(results) == 1
@@ -285,7 +277,7 @@ class TestUploadFiles:
 
     def test_upload_multiple_files(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             files = [
                 ("/a.txt", b"aaa"),
@@ -299,7 +291,7 @@ class TestUploadFiles:
 
     def test_upload_invalid_path(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("relative/path.txt", b"data")])
             assert results[0].error == "invalid_path"
@@ -308,31 +300,23 @@ class TestUploadFiles:
 
     def test_upload_empty_path(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("", b"data")])
             assert results[0].error == "invalid_path"
             sb.stop()
 
     def test_upload_permission_denied(self) -> None:
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(
-                stderr="sh: Permission denied", exit_code=1
-            )
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stderr="sh: Permission denied", exit_code=1))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/root/secret.txt", b"data")])
             assert results[0].error == "permission_denied"
             sb.stop()
 
     def test_upload_is_directory(self) -> None:
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(
-                stderr="Is a directory", exit_code=1
-            )
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stderr="Is a directory", exit_code=1))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/tmp/", b"data")])
             assert results[0].error == "is_directory"
@@ -351,7 +335,7 @@ class TestUploadFiles:
             return FakeExecutionResult(exit_code=0)
 
         mock.run = run_effect
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.upload_files([("/a.txt", b"ok"), ("/b.txt", b"fail")])
             assert results[0].error is None
@@ -369,10 +353,8 @@ class TestDownloadFiles:
         import base64 as b64
 
         encoded = b64.b64encode(b"file content here").decode("ascii")
-        mock = make_mock_client(
-            run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0)
-        )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/tmp/test.txt"])
             assert len(results) == 1
@@ -388,7 +370,7 @@ class TestDownloadFiles:
                 exit_code=1,
             )
         )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/nonexistent.txt"])
             assert results[0].content is None
@@ -402,7 +384,7 @@ class TestDownloadFiles:
                 exit_code=1,
             )
         )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/root/secret"])
             assert results[0].error == "permission_denied"
@@ -415,7 +397,7 @@ class TestDownloadFiles:
                 exit_code=1,
             )
         )
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/tmp/"])
             assert results[0].error == "is_directory"
@@ -423,7 +405,7 @@ class TestDownloadFiles:
 
     def test_download_invalid_path(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["relative.txt"])
             assert results[0].error == "invalid_path"
@@ -439,16 +421,12 @@ class TestDownloadFiles:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return FakeExecutionResult(
-                    stdout=b64.b64encode(b"aaa").decode() + "\n", exit_code=0
-                )
-            return FakeExecutionResult(
-                stdout=b64.b64encode(b"bbb").decode() + "\n", exit_code=0
-            )
+                return FakeExecutionResult(stdout=b64.b64encode(b"aaa").decode() + "\n", exit_code=0)
+            return FakeExecutionResult(stdout=b64.b64encode(b"bbb").decode() + "\n", exit_code=0)
 
         mock = make_mock_client()
         mock.run = run_effect
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/a.txt", "/b.txt"])
             assert results[0].content == b"aaa"
@@ -464,16 +442,12 @@ class TestDownloadFiles:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                return FakeExecutionResult(
-                    stdout=b64.b64encode(b"ok").decode() + "\n", exit_code=0
-                )
-            return FakeExecutionResult(
-                stderr="No such file or directory", exit_code=1
-            )
+                return FakeExecutionResult(stdout=b64.b64encode(b"ok").decode() + "\n", exit_code=0)
+            return FakeExecutionResult(stderr="No such file or directory", exit_code=1)
 
         mock = make_mock_client()
         mock.run = run_effect
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             results = sb.download_files(["/a.txt", "/missing.txt"])
             assert results[0].error is None
@@ -489,7 +463,7 @@ class TestDownloadFiles:
 class TestReuseSandbox:
     def test_reuse_true_keeps_same_client(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=True)
             sb.execute("echo 1")
             client_after_first = sb._client
@@ -499,7 +473,7 @@ class TestReuseSandbox:
 
     def test_reuse_false_can_restart(self) -> None:
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=False)
             sb.start()
             sb.stop()
@@ -526,7 +500,7 @@ class TestThreadSafety:
 
         mock.__enter__ = counting_enter
 
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             errors: list[Exception] = []
 
@@ -558,7 +532,7 @@ class TestThreadSafety:
 
         mock.run = counting_run
 
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             r1 = sb.execute("echo 1")
             r2 = sb.execute("echo 2")
@@ -575,9 +549,7 @@ class TestThreadSafety:
         import base64 as b64
 
         mock = make_mock_client(
-            run_result=FakeExecutionResult(
-                stdout=b64.b64encode(b"data").decode() + "\n", exit_code=0
-            )
+            run_result=FakeExecutionResult(stdout=b64.b64encode(b"data").decode() + "\n", exit_code=0)
         )
         enter_count = 0
         original_enter = mock.__enter__
@@ -589,7 +561,7 @@ class TestThreadSafety:
 
         mock.__enter__ = counting_enter
 
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             errors: list[Exception] = []
 
@@ -631,7 +603,7 @@ class TestThreadSafety:
     def test_concurrent_stop_is_safe(self) -> None:
         """Multiple threads calling stop() concurrently doesn't double-destroy."""
         mock = make_mock_client()
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n")
             sb.start()
             errors: list[Exception] = []
@@ -660,7 +632,7 @@ class TestThreadSafety:
 
 class TestClientCreation:
     def test_passes_gateway_name(self) -> None:
-        with patch("agentic_sandbox.SandboxClient") as MockClient:
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
             sb = KubernetesSandbox(
                 template_name="tpl",
@@ -676,7 +648,7 @@ class TestClientCreation:
             sb.stop()
 
     def test_passes_api_url(self) -> None:
-        with patch("agentic_sandbox.SandboxClient") as MockClient:
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
             sb = KubernetesSandbox(
                 template_name="tpl",
@@ -690,7 +662,7 @@ class TestClientCreation:
             sb.stop()
 
     def test_passes_server_port(self) -> None:
-        with patch("agentic_sandbox.SandboxClient") as MockClient:
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
             sb = KubernetesSandbox(
                 template_name="tpl",

@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 import langchain_k8s.proxy as proxy_mod
 from langchain_k8s.proxy import _apply_proxy_env, _is_buggy, patch_k8s_proxy_config
 
-
 # ---------------------------------------------------------------------------
 # Fake Configuration that reproduces the upstream bug
 # ---------------------------------------------------------------------------
@@ -91,8 +90,7 @@ class TestApplyProxyEnv:
             assert cfg.no_proxy == "127.0.0.1,localhost"
 
     def test_noop_without_env_vars(self) -> None:
-        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-                   "NO_PROXY", "no_proxy"):
+        for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "NO_PROXY", "no_proxy"):
             os.environ.pop(k, None)
         cfg = MagicMock()
         cfg.proxy = None
@@ -129,34 +127,32 @@ class TestPatchK8sProxyConfig:
             "HTTP_PROXY": "http://proxy:8888",
             "NO_PROXY": "127.0.0.1,localhost",
         }
-        with patch.dict(os.environ, env, clear=False):
-            with patch(
+        with (
+            patch.dict(os.environ, env, clear=False),
+            patch(
                 "langchain_k8s.proxy.Configuration",
                 _BuggyConfiguration,
                 create=True,
-            ):
-                # Redirect the import inside patch_k8s_proxy_config
-                with patch.dict(
-                    "sys.modules",
-                    {"kubernetes.client.configuration": MagicMock(
-                        Configuration=_BuggyConfiguration
-                    )},
-                ):
-                    patch_k8s_proxy_config()
+            ),
+            patch.dict(
+                "sys.modules",
+                {"kubernetes.client.configuration": MagicMock(Configuration=_BuggyConfiguration)},
+            ),
+        ):
+            # Redirect the import inside patch_k8s_proxy_config
+            patch_k8s_proxy_config()
 
-                    # After patching, creating a _BuggyConfiguration should
-                    # now retain the NO_PROXY value
-                    cfg = _BuggyConfiguration()
-                    assert cfg.no_proxy == "127.0.0.1,localhost"
-                    assert cfg.proxy == "http://proxy:8888"
+            # After patching, creating a _BuggyConfiguration should
+            # now retain the NO_PROXY value
+            cfg = _BuggyConfiguration()
+            assert cfg.no_proxy == "127.0.0.1,localhost"
+            assert cfg.proxy == "http://proxy:8888"
 
     def test_idempotent(self) -> None:
         """Calling patch_k8s_proxy_config twice does not double-wrap."""
         with patch.dict(
             "sys.modules",
-            {"kubernetes.client.configuration": MagicMock(
-                Configuration=_BuggyConfiguration
-            )},
+            {"kubernetes.client.configuration": MagicMock(Configuration=_BuggyConfiguration)},
         ):
             patch_k8s_proxy_config()
             first_init = _BuggyConfiguration.__init__
@@ -171,9 +167,7 @@ class TestPatchK8sProxyConfig:
         original_init = _FixedConfiguration.__init__
         with patch.dict(
             "sys.modules",
-            {"kubernetes.client.configuration": MagicMock(
-                Configuration=_FixedConfiguration
-            )},
+            {"kubernetes.client.configuration": MagicMock(Configuration=_FixedConfiguration)},
         ):
             patch_k8s_proxy_config()
             assert _FixedConfiguration.__init__ is original_init

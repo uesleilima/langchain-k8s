@@ -61,10 +61,7 @@ def patch_k8s_proxy_config() -> None:
         return
 
     if not _is_buggy(Configuration):
-        logger.debug(
-            "kubernetes.client.Configuration does not exhibit the "
-            "no_proxy bug; skipping patch"
-        )
+        logger.debug("kubernetes.client.Configuration does not exhibit the no_proxy bug; skipping patch")
         return
 
     _original_init = Configuration.__init__

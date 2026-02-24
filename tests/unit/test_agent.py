@@ -15,7 +15,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from langchain_k8s import KubernetesSandbox
-from tests.conftest import FakeExecutionResult, make_mock_client, FakeToolModel
+from tests.conftest import FakeExecutionResult, FakeToolModel, make_mock_client
 
 
 def _run_agent(
@@ -25,7 +25,7 @@ def _run_agent(
 ) -> tuple[dict[str, Any], KubernetesSandbox]:
     """Build a ``create_agent`` with a mocked sandbox, invoke it, and return results.
 
-    The ``agentic_sandbox.SandboxClient`` patch stays active for the entire
+    The ``k8s_agent_sandbox.SandboxClient`` patch stays active for the entire
     lifetime of the agent (construction → invoke → assertions) so that lazy
     sandbox initialisation inside ``_create_client()`` picks up the mock.
 
@@ -33,7 +33,7 @@ def _run_agent(
     """
     model = FakeToolModel(responses=responses)
 
-    with patch("agentic_sandbox.SandboxClient", return_value=mock_client):
+    with patch("k8s_agent_sandbox.SandboxClient", return_value=mock_client):
         backend = KubernetesSandbox(
             template_name="test-tpl",
             namespace="test-ns",
@@ -44,9 +44,7 @@ def _run_agent(
             middleware=[FilesystemMiddleware(backend=backend)],
         )
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content=user_message)]}
-        )
+        result = agent.invoke({"messages": [HumanMessage(content=user_message)]})
 
     return result, backend
 
@@ -225,11 +223,13 @@ class TestDeepAgentLifecycle:
     def test_backend_not_started_until_tool_call(self) -> None:
         """Sandbox is only created when the agent actually calls a tool."""
         mock = make_mock_client()
-        model = FakeToolModel(responses=[
-            AIMessage(content="I don't need to run anything."),
-        ])
+        model = FakeToolModel(
+            responses=[
+                AIMessage(content="I don't need to run anything."),
+            ]
+        )
 
-        with patch("agentic_sandbox.SandboxClient", return_value=mock):
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             backend = KubernetesSandbox(
                 template_name="test-tpl",
                 namespace="test-ns",
@@ -240,9 +240,7 @@ class TestDeepAgentLifecycle:
                 middleware=[FilesystemMiddleware(backend=backend)],
             )
 
-            result = agent.invoke(
-                {"messages": [HumanMessage(content="Just say hello")]}
-            )
+            result = agent.invoke({"messages": [HumanMessage(content="Just say hello")]})
 
         # Agent responded without tool calls → sandbox was never started
         assert not backend._started

@@ -3,26 +3,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
 from langchain_k8s import KubernetesSandbox
-
-from typing import Any
-from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 
 
 class FakeToolModel(FakeMessagesListChatModel):
     """``FakeMessagesListChatModel`` with a no-op ``bind_tools``."""
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> "FakeToolModel":  # noqa: ARG002
+    def bind_tools(self, tools: Any, **kwargs: Any) -> FakeToolModel:  # noqa: ARG002
         return self
 
 
 @dataclass
 class FakeExecutionResult:
-    """Mimics ``agentic_sandbox.sandbox_client.ExecutionResult``."""
+    """Mimics ``k8s_agent_sandbox.sandbox_client.ExecutionResult``."""
 
     stdout: str = ""
     stderr: str = ""
@@ -63,7 +62,7 @@ def sandbox(mock_sandbox_client: MagicMock) -> KubernetesSandbox:
             create=True,
         ),
         patch(
-            "agentic_sandbox.SandboxClient",
+            "k8s_agent_sandbox.SandboxClient",
             return_value=mock_sandbox_client,
         ),
     ):

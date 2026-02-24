@@ -1,0 +1,47 @@
+name: Integration Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      python-version:
+        description: Python version to use
+        required: false
+        default: "3.11"
+        type: choice
+        options:
+          - "3.11"
+          - "3.12"
+
+permissions:
+  contents: read
+
+jobs:
+  integration-tests:
+    name: Integration tests (Python ${{ inputs.python-version }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python ${{ inputs.python-version }}
+        run: uv python install ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --all-groups
+
+      - name: Install Kind
+        uses: helm/kind-action@v1
+        with:
+          install_only: true
+
+      - name: Spin up Kind cluster
+        run: ./scripts/kind-setup.sh
+
+      - name: Run integration tests
+        run: uv run pytest tests/integration/ -v -m integration
+
+      - name: Tear down Kind cluster
+        if: always()
+        run: ./scripts/kind-teardown.sh

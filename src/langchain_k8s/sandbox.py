@@ -20,7 +20,7 @@ from deepagents.backends.sandbox import BaseSandbox
 from langchain_k8s.proxy import patch_k8s_proxy_config
 
 if TYPE_CHECKING:
-    from agentic_sandbox import SandboxClient
+    from k8s_agent_sandbox import SandboxClient
 
 # Apply the NO_PROXY monkey-patch once at import time so that all
 # kubernetes client instances created in this process honour NO_PROXY.
@@ -35,7 +35,7 @@ _DEFAULT_COMMAND_TIMEOUT = 300  # 5 minutes
 class KubernetesSandbox(BaseSandbox):
     """LangChain sandbox backend for kubernetes-sigs/agent-sandbox.
 
-    Wraps the ``k8s-agent-sandbox`` Python SDK (``agentic_sandbox.SandboxClient``)
+    Wraps the ``k8s-agent-sandbox`` Python SDK (``k8s_agent_sandbox.SandboxClient``)
     to implement the ``BaseSandbox`` contract.  All standard filesystem tools
     (``read``, ``write``, ``edit``, ``ls``, ``grep``, ``glob``) are provided by
     ``BaseSandbox`` via the ``execute()`` primitive.
@@ -128,8 +128,7 @@ class KubernetesSandbox(BaseSandbox):
         self._started = False
 
         logger.debug(
-            "KubernetesSandbox created: id=%s template=%s namespace=%s "
-            "reuse=%s mode=%s",
+            "KubernetesSandbox created: id=%s template=%s namespace=%s reuse=%s mode=%s",
             self._id,
             self._template_name,
             self._namespace,
@@ -200,8 +199,7 @@ class KubernetesSandbox(BaseSandbox):
                 resp = self._run(command)
             else:
                 logger.debug(
-                    "execute: sandbox=%s command failed (reuse_sandbox=False, "
-                    "not retrying): %s",
+                    "execute: sandbox=%s command failed (reuse_sandbox=False, not retrying): %s",
                     self.id,
                     exc,
                 )
@@ -244,10 +242,7 @@ class KubernetesSandbox(BaseSandbox):
             try:
                 b64 = base64.b64encode(content).decode("ascii")
                 escaped_path = shlex.quote(path)
-                cmd = (
-                    f"mkdir -p $(dirname {escaped_path}) && "
-                    f"printf '%s' '{b64}' | base64 -d > {escaped_path}"
-                )
+                cmd = f"mkdir -p $(dirname {escaped_path}) && printf '%s' '{b64}' | base64 -d > {escaped_path}"
                 resp = self._run_raw(cmd)
                 if resp.exit_code != 0:
                     file_error = _classify_error(resp.output)
@@ -257,9 +252,7 @@ class KubernetesSandbox(BaseSandbox):
                         path,
                         file_error,
                     )
-                    results.append(
-                        FileUploadResponse(path=path, error=file_error)
-                    )
+                    results.append(FileUploadResponse(path=path, error=file_error))
                 else:
                     logger.debug(
                         "upload_files: sandbox=%s path=%s size=%d OK",
@@ -309,11 +302,7 @@ class KubernetesSandbox(BaseSandbox):
                         path,
                         file_error,
                     )
-                    results.append(
-                        FileDownloadResponse(
-                            path=path, content=None, error=file_error
-                        )
-                    )
+                    results.append(FileDownloadResponse(path=path, content=None, error=file_error))
                 else:
                     content = base64.b64decode(resp.output.strip())
                     logger.debug(
@@ -399,7 +388,7 @@ class KubernetesSandbox(BaseSandbox):
 
     def _create_client(self) -> SandboxClient:
         """Build a new ``SandboxClient`` from stored configuration."""
-        from agentic_sandbox import SandboxClient as _SandboxClient
+        from k8s_agent_sandbox import SandboxClient as _SandboxClient
 
         kwargs: dict[str, object] = {
             "template_name": self._template_name,

@@ -64,7 +64,7 @@ class TestBasicExecution:
         assert "Python" in resp.output
 
     def test_python_script(self, sandbox: KubernetesSandbox) -> None:
-        resp = sandbox.execute("python3 -c \"print(2 + 2)\"")
+        resp = sandbox.execute('python3 -c "print(2 + 2)"')
         assert resp.exit_code == 0
         assert "4" in resp.output
 
@@ -245,9 +245,7 @@ class TestConcurrency:
 
             def upload_worker(idx: int) -> None:
                 try:
-                    results = sb.upload_files(
-                        [(f"/tmp/concurrent-upload-{idx}.txt", b"upload-data")]
-                    )
+                    results = sb.upload_files([(f"/tmp/concurrent-upload-{idx}.txt", b"upload-data")])
                     assert results[0].error is None
                 except Exception as e:
                     errors.append(e)
@@ -277,9 +275,7 @@ class TestConcurrency:
             assert not errors, f"Thread errors: {errors}"
 
             # Verify uploads persisted
-            resp = sb.execute(
-                "cat /tmp/concurrent-upload-0.txt /tmp/concurrent-upload-1.txt"
-            )
+            resp = sb.execute("cat /tmp/concurrent-upload-0.txt /tmp/concurrent-upload-1.txt")
             assert resp.exit_code == 0
             assert resp.output.count("upload-data") == 2
 
@@ -332,10 +328,7 @@ class TestConcurrency:
             except Exception as e:
                 errors.append(e)
 
-        threads = [
-            threading.Thread(target=instance_worker, args=(i,))
-            for i in range(num_instances)
-        ]
+        threads = [threading.Thread(target=instance_worker, args=(i,)) for i in range(num_instances)]
         for t in threads:
             t.start()
         for t in threads:
