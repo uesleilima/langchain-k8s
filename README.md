@@ -153,6 +153,125 @@ backend = KubernetesSandbox(
 
 A fresh sandbox is created for each `start()`/`stop()` cycle. Maximum isolation between invocations at the cost of cold-start latency.
 
+## Enterprise features
+
+### Path access policy
+
+Restrict which directories agents can write to using `allow_prefixes`. When set, only `write()` and `edit()` operations targeting paths under the specified prefixes are permitted. All other paths return an error without executing a command.
+
+```python
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    allow_prefixes=["/workspace/", "/tmp/"],
+)
+```
+
+When `allow_prefixes` is `None` (the default), no write restrictions are applied.
+
+> **Note:** This is a tool-level policy. It does not block `execute("echo bad > /etc/passwd")`. Use the Kubernetes pod `securityContext` (e.g. `readOnlyRootFilesystem`) for system-level protection.
+
+### Virtual filesystem
+
+When `virtual_mode=True`, all file-operation paths (`read`, `write`, `edit`, `ls`, `grep`, `glob`, uploads, downloads) are resolved under `root_dir` (default `/workspace`). Path traversal (`..`, `~`) is rejected.
+
+```python
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    virtual_mode=True,
+    root_dir="/workspace",  # default when virtual_mode=True
+)
+
+# Agent sees virtual paths — resolved under /workspace automatically:
+#   write("/src/main.py", ...)  →  writes to /workspace/src/main.py
+#   read("/src/main.py")        →  reads from /workspace/src/main.py
+#   upload_files([("/data/input.csv", content)])  →  /workspace/data/input.csv
+```
+
+In virtual mode, `download_files()` uses the native SDK HTTP transfer (`SandboxClient.read()`) for better performance. Uploads continue to use shell commands because the SDK `write()` method only preserves the file basename.
+
+When combined with `allow_prefixes`, the policy check runs against the **resolved** path:
+
+```python
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    virtual_mode=True,
+    root_dir="/workspace",
+    allow_prefixes=["/workspace/"],
+)
+# Virtual path "/src/main.py" resolves to "/workspace/src/main.py" — allowed
+# Virtual path "../../etc/passwd" — rejected (path traversal)
+```
+
+### Horizontal scaling and sticky sessions
+
+When deploying a service that uses `KubernetesSandbox` behind a load balancer with multiple replicas, requests from the same user or session must be routed to the **same service instance**. The sandbox state (pod, port-forward) is held in-process, so different instances cannot share a sandbox.
+
+**Configure sticky sessions** using one of these approaches:
+
+Kubernetes Service with session affinity:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-agent-service
+spec:
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+  selector:
+    app: my-agent
+  ports:
+    - port: 80
+      targetPort: 8080
+```
+
+NGINX Ingress with cookie affinity:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-agent-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/affinity: "cookie"
+    nginx.ingress.kubernetes.io/session-cookie-name: "AGENT_SESSION"
+    nginx.ingress.kubernetes.io/session-cookie-max-age: "3600"
+spec:
+  rules:
+    - host: agent.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: my-agent-service
+                port:
+                  number: 80
+```
+
+### Preserving sandboxes across restarts
+
+Set `skip_cleanup=True` to prevent sandbox pod destruction when `stop()` is called. The Kubernetes `SandboxClaim` is preserved so the sandbox pod continues running. Use `sandbox_id` for stable identification across service restarts.
+
+```python
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    skip_cleanup=True,
+    sandbox_id="user-session-123",
+)
+```
+
+The sandbox pod must be cleaned up externally (e.g. Kubernetes TTL controller, CronJob, or manual deletion).
+
+> **Note:** Full sandbox reconnection (multiple service instances sharing the same Kubernetes pod) requires upstream SDK support for deterministic claim names. Currently each `start()` call creates a new `SandboxClaim`.
+
 ## Configuration reference
 
 | Parameter | Type | Default | Description |
@@ -166,6 +285,11 @@ A fresh sandbox is created for each `start()`/`stop()` cycle. Maximum isolation 
 | `reuse_sandbox` | `bool` | `True` | Reuse sandbox across calls |
 | `max_output_size` | `int` | `1048576` | Max output bytes before truncation |
 | `command_timeout` | `int` | `300` | Command timeout in seconds |
+| `allow_prefixes` | `list[str] \| None` | `None` | Restrict `write`/`edit` to these path prefixes |
+| `root_dir` | `str \| None` | `None` | Root directory for virtual filesystem mode |
+| `virtual_mode` | `bool` | `False` | Resolve all paths under `root_dir` |
+| `sandbox_id` | `str \| None` | `None` | Stable identifier (overrides auto-generated ID) |
+| `skip_cleanup` | `bool` | `False` | Preserve `SandboxClaim` on `stop()` |
 
 ## Development
 

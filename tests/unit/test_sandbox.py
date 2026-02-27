@@ -673,3 +673,541 @@ class TestClientCreation:
             kwargs = MockClient.call_args[1]
             assert kwargs["server_port"] == 9999
             sb.stop()
+
+
+# ---------------------------------------------------------------------------
+# allow_prefixes policy hook
+# ---------------------------------------------------------------------------
+
+
+class TestAllowPrefixes:
+    def test_default_allow_prefixes_is_none(self) -> None:
+        sb, _ = _make_sandbox()
+        assert sb._allow_prefixes is None
+
+    def test_allow_prefixes_none_allows_all_writes(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb.write("/etc/test.txt", "content")
+            mock.run.assert_called()
+            sb.stop()
+
+    def test_allow_prefixes_blocks_path_outside_list(self) -> None:
+        sb, mock = _make_sandbox(allow_prefixes=["/workspace/"])
+        result = sb.write("/etc/passwd", "malicious content")
+        assert result.error is not None
+        assert "not under any allowed prefix" in result.error
+        mock.run.assert_not_called()
+
+    def test_allow_prefixes_allows_path_under_prefix(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace/"])
+            sb.write("/workspace/main.py", "print('hi')")
+            mock.run.assert_called()
+            sb.stop()
+
+    def test_allow_prefixes_multiple_prefixes(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace/", "/tmp/"])
+            sb.write("/workspace/main.py", "content")
+            mock.run.assert_called()
+            mock.run.reset_mock()
+            sb.write("/tmp/data.txt", "content")
+            mock.run.assert_called()
+            # But /etc/ should be blocked.
+            result = sb.write("/etc/test.txt", "content")
+            assert result.error is not None
+            assert "not under any allowed prefix" in result.error
+            sb.stop()
+
+    def test_edit_denied_by_allow_prefixes(self) -> None:
+        sb, mock = _make_sandbox(allow_prefixes=["/workspace/"])
+        result = sb.edit("/etc/hosts", "old", "new")
+        assert result.error is not None
+        assert "not under any allowed prefix" in result.error
+        mock.run.assert_not_called()
+
+    def test_edit_allowed_by_allow_prefixes(self) -> None:
+        # BaseSandbox.edit() expects the execute output to be a number (replacement count).
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout="1", exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace/"])
+            sb.edit("/workspace/test.txt", "old", "new")
+            mock.run.assert_called()
+            sb.stop()
+
+    def test_allow_prefix_normalization_adds_trailing_slash(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace"])
+            # "/workspace" should be normalized to "/workspace/".
+            sb.write("/workspace/file.txt", "data")
+            mock.run.assert_called()
+            sb.stop()
+
+    def test_allow_prefixes_stored_as_tuple(self) -> None:
+        sb, _ = _make_sandbox(allow_prefixes=["/a/", "/b"])
+        assert isinstance(sb._allow_prefixes, tuple)
+        assert sb._allow_prefixes == ("/a/", "/b/")
+
+
+# ---------------------------------------------------------------------------
+# virtual_mode + root_dir
+# ---------------------------------------------------------------------------
+
+
+class TestVirtualMode:
+    # -- Defaults and construction --
+
+    def test_virtual_mode_default_is_false(self) -> None:
+        sb, _ = _make_sandbox()
+        assert sb._virtual_mode is False
+
+    def test_root_dir_default_when_virtual_mode_true(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True)
+        assert sb._root_dir == "/workspace"
+
+    def test_root_dir_custom_when_virtual_mode_true(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/home/agent")
+        assert sb._root_dir == "/home/agent"
+
+    def test_root_dir_none_when_virtual_mode_false(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=False)
+        assert sb._root_dir is None
+
+    # -- Path resolution --
+
+    def test_path_resolution_anchors_under_root_dir(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        resolved = sb._resolve_virtual_path("/src/main.py")
+        assert resolved == "/workspace/src/main.py"
+
+    def test_path_resolution_relative_path(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        resolved = sb._resolve_virtual_path("src/main.py")
+        assert resolved == "/workspace/src/main.py"
+
+    def test_path_traversal_blocked(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        with pytest.raises(ValueError, match="Path traversal not allowed"):
+            sb._resolve_virtual_path("../../etc/passwd")
+
+    def test_tilde_path_blocked(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        with pytest.raises(ValueError, match="Path traversal not allowed"):
+            sb._resolve_virtual_path("~/.bashrc")
+
+    def test_path_resolution_disabled_when_virtual_mode_false(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=False)
+        resolved = sb._resolve_virtual_path("/etc/passwd")
+        assert resolved == "/etc/passwd"
+
+    # -- read() resolves paths --
+
+    def test_read_resolves_path(self) -> None:
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout="     1\tline1", exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.read("/src/main.py")
+            cmd = mock.run.call_args[0][0]
+            assert "/workspace/src/main.py" in cmd
+            sb.stop()
+
+    def test_read_returns_error_on_traversal(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        result = sb.read("../../etc/passwd")
+        assert "Path traversal not allowed" in result
+
+    # -- write() resolves paths --
+
+    def test_write_resolves_path(self) -> None:
+        import base64 as b64
+        import json
+
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.write("/src/main.py", "print('hi')")
+            # write() uses base64-encoded JSON payload — extract and verify resolved path.
+            cmd = mock.run.call_args[0][0]
+            # The payload is between the heredoc markers.
+            payload_b64 = cmd.split("__DEEPAGENTS_EOF__")[1].strip().strip("'\"")
+            payload = json.loads(b64.b64decode(payload_b64).decode())
+            assert payload["path"] == "/workspace/src/main.py"
+            sb.stop()
+
+    def test_write_returns_error_on_traversal(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        result = sb.write("../../etc/passwd", "bad")
+        assert result.error is not None
+        assert "Path traversal not allowed" in result.error
+
+    # -- edit() resolves paths --
+
+    def test_edit_resolves_path(self) -> None:
+        import base64 as b64
+        import json
+
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout="1", exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.edit("/src/main.py", "old", "new")
+            # edit() uses base64-encoded JSON payload — extract and verify resolved path.
+            cmd = mock.run.call_args[0][0]
+            payload_b64 = cmd.split("__DEEPAGENTS_EOF__")[1].strip().strip("'\"")
+            payload = json.loads(b64.b64decode(payload_b64).decode())
+            assert payload["path"] == "/workspace/src/main.py"
+            sb.stop()
+
+    def test_edit_returns_error_on_traversal(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        result = sb.edit("../../etc/passwd", "old", "new")
+        assert result.error is not None
+        assert "Path traversal not allowed" in result.error
+
+    # -- ls_info() resolves paths --
+
+    def test_ls_info_resolves_path(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.ls_info("/src")
+            cmd = mock.run.call_args[0][0]
+            assert "/workspace/src" in cmd
+            sb.stop()
+
+    def test_ls_info_returns_empty_on_traversal(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        result = sb.ls_info("../../etc")
+        assert result == []
+
+    # -- glob_info() resolves paths --
+
+    def test_glob_info_resolves_path(self) -> None:
+        import base64 as b64
+
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.glob_info("*.py", "/src")
+            # glob_info uses base64-encoded path — verify the call was made with
+            # the resolved path by checking the base64-encoded value in the command.
+            assert mock.run.called
+            raw_cmd = mock.run.call_args[0][0]
+            # The resolved path "/workspace/src" is base64-encoded in the command.
+            assert b64.b64encode(b"/workspace/src").decode() in raw_cmd
+            sb.stop()
+
+    def test_glob_info_returns_empty_on_traversal(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        result = sb.glob_info("*.py", "../../etc")
+        assert result == []
+
+    # -- grep_raw() resolves paths --
+
+    def test_grep_raw_resolves_path(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.grep_raw("TODO", "/src")
+            cmd = mock.run.call_args[0][0]
+            assert "/workspace/src" in cmd
+            sb.stop()
+
+    def test_grep_raw_defaults_to_root_dir_when_path_none(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb.grep_raw("TODO")
+            cmd = mock.run.call_args[0][0]
+            assert "/workspace" in cmd
+            sb.stop()
+
+    def test_grep_raw_returns_error_on_traversal(self) -> None:
+        sb, _ = _make_sandbox(virtual_mode=True, root_dir="/workspace")
+        # grep_raw with traversal path should return error string.
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb2 = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            result = sb2.grep_raw("TODO", "../../etc")
+            assert isinstance(result, str)
+            assert "Path traversal not allowed" in result
+            sb2.stop()
+
+    # -- upload_files() resolves paths --
+
+    def test_upload_resolves_path(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            results = sb.upload_files([("/src/test.txt", b"data")])
+            assert results[0].error is None
+            cmd = mock.run.call_args[0][0]
+            assert "/workspace/src/test.txt" in cmd
+            sb.stop()
+
+    def test_upload_blocks_traversal(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            results = sb.upload_files([("../../etc/passwd", b"bad")])
+            assert results[0].error == "invalid_path"
+            sb.stop()
+
+    def test_upload_always_uses_shell_regardless_of_virtual_mode(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            results = sb.upload_files([("/src/test.txt", b"data")])
+            assert results[0].error is None
+            # Upload should use run() (shell), not client.write().
+            mock.run.assert_called()
+            cmd = mock.run.call_args[0][0]
+            assert "base64 -d" in cmd
+            mock.write.assert_not_called()
+            sb.stop()
+
+    # -- download_files() --
+
+    def test_shell_download_when_virtual_mode_false(self) -> None:
+        import base64 as b64
+
+        encoded = b64.b64encode(b"shell content").decode("ascii")
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=False)
+            results = sb.download_files(["/tmp/test.txt"])
+            assert results[0].content == b"shell content"
+            # Verify shell command was used (via run).
+            cmd = mock.run.call_args[0][0]
+            assert "base64" in cmd
+            sb.stop()
+
+    def test_native_download_when_virtual_mode_true(self) -> None:
+        mock = make_mock_client()
+        mock.read.return_value = b"native content"
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            results = sb.download_files(["/src/test.txt"])
+            assert results[0].content == b"native content"
+            assert results[0].error is None
+            # Resolved path should be passed to client.read().
+            mock.read.assert_called_once_with("/workspace/src/test.txt")
+            sb.stop()
+
+    def test_native_download_file_not_found(self) -> None:
+        mock = make_mock_client()
+        mock.read.side_effect = RuntimeError("404 not found")
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            results = sb.download_files(["/missing.txt"])
+            assert results[0].content is None
+            assert results[0].error == "file_not_found"
+            sb.stop()
+
+    def test_native_download_permission_denied(self) -> None:
+        mock = make_mock_client()
+        mock.read.side_effect = RuntimeError("403 Permission denied")
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            results = sb.download_files(["/secret.txt"])
+            assert results[0].content is None
+            assert results[0].error == "permission_denied"
+            sb.stop()
+
+    def test_native_download_relative_path_resolved_in_virtual_mode(self) -> None:
+        mock = make_mock_client()
+        mock.read.return_value = b"resolved content"
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            results = sb.download_files(["relative.txt"])
+            # In virtual mode, relative paths get "/" prepended, resolving to
+            # /workspace/relative.txt which is a valid absolute path.
+            assert results[0].error is None
+            assert results[0].content == b"resolved content"
+            mock.read.assert_called_once_with("/workspace/relative.txt")
+            sb.stop()
+
+    def test_native_download_blocks_traversal(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            results = sb.download_files(["../../etc/passwd"])
+            assert results[0].error == "invalid_path"
+            assert results[0].content is None
+            sb.stop()
+
+    def test_native_download_multiple_files(self) -> None:
+        mock = make_mock_client()
+        call_count = 0
+
+        def read_effect(path: str) -> bytes:
+            nonlocal call_count
+            call_count += 1
+            return f"content-{call_count}".encode()
+
+        mock.read = read_effect
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            results = sb.download_files(["/a.txt", "/b.txt"])
+            assert results[0].content == b"content-1"
+            assert results[1].content == b"content-2"
+            sb.stop()
+
+    # -- Combined: allow_prefixes + virtual_mode --
+
+    def test_allow_prefixes_check_against_resolved_path(self) -> None:
+        """allow_prefixes should check the resolved path, not the virtual path."""
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(
+                template_name="t",
+                namespace="n",
+                virtual_mode=True,
+                root_dir="/workspace",
+                allow_prefixes=["/workspace/"],
+            )
+            # Virtual path "/src/main.py" resolves to "/workspace/src/main.py" — allowed.
+            sb.write("/src/main.py", "print('hi')")
+            mock.run.assert_called()
+            sb.stop()
+
+    def test_allow_prefixes_blocks_resolved_path_outside_prefix(self) -> None:
+        """allow_prefixes blocks writes where the resolved path is outside the prefix."""
+        sb, mock = _make_sandbox(
+            virtual_mode=True,
+            root_dir="/home/agent",
+            allow_prefixes=["/workspace/"],
+        )
+        # Virtual path "/file.txt" resolves to "/home/agent/file.txt" — blocked.
+        result = sb.write("/file.txt", "data")
+        assert result.error is not None
+        assert "not under any allowed prefix" in result.error
+        mock.run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# skip_cleanup & sandbox_id
+# ---------------------------------------------------------------------------
+
+
+class TestSkipCleanup:
+    def test_skip_cleanup_default_is_false(self) -> None:
+        sb, _ = _make_sandbox()
+        assert sb._skip_cleanup is False
+
+    def test_sandbox_id_default_is_none(self) -> None:
+        sb, _ = _make_sandbox()
+        assert sb._sandbox_id is None
+
+    def test_sandbox_id_overrides_id_property(self) -> None:
+        sb, _ = _make_sandbox(sandbox_id="my-stable-id")
+        assert sb.id == "my-stable-id"
+
+    def test_sandbox_id_overrides_claim_name(self) -> None:
+        mock = make_mock_client(claim_name="claim-xyz")
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n", sandbox_id="my-id")
+            sb.start()
+            assert sb.id == "my-id"  # Not "claim-xyz"
+            sb.stop()
+
+    def test_skip_cleanup_nulls_claim_during_exit(self) -> None:
+        mock = make_mock_client(claim_name="keep-alive")
+        claim_during_exit: list[str | None] = []
+
+        original_exit = mock.__exit__
+
+        def capture_exit(*args: object) -> object:
+            claim_during_exit.append(mock.claim_name)
+            return original_exit(*args)
+
+        mock.__exit__ = capture_exit
+
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(
+                template_name="t",
+                namespace="n",
+                skip_cleanup=True,
+            )
+            sb.start()
+            sb.stop()
+
+        # claim_name must be None during __exit__ so the SDK skips CRD deletion.
+        assert claim_during_exit == [None]
+
+    def test_skip_cleanup_restores_claim_after_exit(self) -> None:
+        mock = make_mock_client(claim_name="keep-alive")
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(
+                template_name="t",
+                namespace="n",
+                skip_cleanup=True,
+            )
+            sb.start()
+            # Capture the client before stop nullifies it.
+            client_ref = sb._client
+            sb.stop()
+        # After stop the client reference still has claim_name restored.
+        assert client_ref is not None
+        assert client_ref.claim_name == "keep-alive"
+
+    def test_normal_stop_keeps_claim_during_exit(self) -> None:
+        mock = make_mock_client(claim_name="delete-me")
+        claim_during_exit: list[str | None] = []
+
+        original_exit = mock.__exit__
+
+        def capture_exit(*args: object) -> object:
+            claim_during_exit.append(mock.claim_name)
+            return original_exit(*args)
+
+        mock.__exit__ = capture_exit
+
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb.start()
+            sb.stop()
+
+        # claim_name should be intact during __exit__.
+        assert claim_during_exit == ["delete-me"]
+
+    def test_context_manager_respects_skip_cleanup(self) -> None:
+        mock = make_mock_client(claim_name="ctx-mgr")
+        claim_during_exit: list[str | None] = []
+
+        original_exit = mock.__exit__
+
+        def capture_exit(*args: object) -> object:
+            claim_during_exit.append(mock.claim_name)
+            return original_exit(*args)
+
+        mock.__exit__ = capture_exit
+
+        with (
+            patch("k8s_agent_sandbox.SandboxClient", return_value=mock),
+            KubernetesSandbox(
+                template_name="t",
+                namespace="n",
+                skip_cleanup=True,
+            ) as sb,
+        ):
+            assert sb._started
+
+        assert claim_during_exit == [None]
+
+    def test_skip_cleanup_tolerates_exit_errors(self) -> None:
+        mock = make_mock_client(claim_name="error-case")
+        mock.__exit__.side_effect = RuntimeError("cleanup boom")
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(
+                template_name="t",
+                namespace="n",
+                skip_cleanup=True,
+            )
+            sb.start()
+            sb.stop()  # should not raise
+            assert not sb._started

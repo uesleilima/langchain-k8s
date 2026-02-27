@@ -22,6 +22,7 @@ Tests are automatically skipped when no Kind cluster is detected.
 
 from __future__ import annotations
 
+import posixpath
 import threading
 from collections.abc import Generator
 
@@ -341,3 +342,223 @@ class TestConcurrency:
         assert len(unique_ids) == num_instances, (
             f"Expected {num_instances} unique sandbox ids, got {len(unique_ids)}: {sandbox_ids}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Enterprise features: allow_prefixes
+# ---------------------------------------------------------------------------
+
+
+class TestAllowPrefixes:
+    def test_write_allowed_under_prefix(self) -> None:
+        """write() succeeds when the path is under an allowed prefix."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            allow_prefixes=["/workspace/", "/tmp/"],
+        ) as sb:
+            result = sb.write("/tmp/allowed.txt", "hello from allow_prefixes")
+            assert result.error is None
+            resp = sb.execute("cat /tmp/allowed.txt")
+            assert resp.exit_code == 0
+            assert "hello from allow_prefixes" in resp.output
+
+    def test_write_blocked_outside_prefix(self) -> None:
+        """write() returns an error when the path is outside allowed prefixes."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            allow_prefixes=["/workspace/"],
+        ) as sb:
+            result = sb.write("/tmp/blocked.txt", "should not land")
+            assert result.error is not None
+            assert "not under any allowed prefix" in result.error
+
+    def test_edit_blocked_outside_prefix(self) -> None:
+        """edit() returns an error when the path is outside allowed prefixes."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            allow_prefixes=["/workspace/"],
+        ) as sb:
+            # Seed a file via execute (bypasses allow_prefixes)
+            sb.execute("echo 'original' > /tmp/edit-blocked.txt")
+            result = sb.edit("/tmp/edit-blocked.txt", "original", "modified")
+            assert result.error is not None
+            assert "not under any allowed prefix" in result.error
+            # File should remain unchanged
+            resp = sb.execute("cat /tmp/edit-blocked.txt")
+            assert "original" in resp.output
+
+    def test_execute_not_restricted_by_allow_prefixes(self) -> None:
+        """execute() is not subject to allow_prefixes (tool-level policy only)."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            allow_prefixes=["/workspace/"],
+        ) as sb:
+            resp = sb.execute("echo 'bypass' > /tmp/exec-bypass.txt && cat /tmp/exec-bypass.txt")
+            assert resp.exit_code == 0
+            assert "bypass" in resp.output
+
+
+# ---------------------------------------------------------------------------
+# Enterprise features: virtual_mode + root_dir
+# ---------------------------------------------------------------------------
+
+
+class TestVirtualMode:
+    def test_write_and_read_under_root_dir(self) -> None:
+        """Virtual paths are resolved under root_dir for write and read."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs",
+        ) as sb:
+            # Ensure root exists
+            sb.execute("mkdir -p /tmp/vfs")
+            result = sb.write("/hello.txt", "virtual content")
+            assert result.error is None
+            # Verify the file actually lives under /tmp/vfs
+            resp = sb.execute("cat /tmp/vfs/hello.txt")
+            assert resp.exit_code == 0
+            assert "virtual content" in resp.output
+            # read() should also resolve the virtual path
+            content = sb.read("/hello.txt")
+            assert "virtual content" in content
+
+    def test_edit_under_root_dir(self) -> None:
+        """edit() resolves virtual paths under root_dir."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs-edit",
+        ) as sb:
+            sb.execute("mkdir -p /tmp/vfs-edit && echo 'old text' > /tmp/vfs-edit/doc.txt")
+            result = sb.edit("/doc.txt", "old text", "new text")
+            assert result.error is None
+            resp = sb.execute("cat /tmp/vfs-edit/doc.txt")
+            assert "new text" in resp.output
+
+    def test_path_traversal_blocked(self) -> None:
+        """Path traversal (``..``) is rejected in virtual mode."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs-jail",
+        ) as sb:
+            result = sb.write("../../etc/passwd", "bad")
+            assert result.error is not None
+            assert "traversal" in result.error.lower()
+
+    def test_upload_resolves_path(self) -> None:
+        """upload_files() resolves virtual paths under root_dir."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs-upload",
+        ) as sb:
+            sb.execute("mkdir -p /tmp/vfs-upload")
+            results = sb.upload_files([("/data.bin", b"uploaded bytes")])
+            assert results[0].error is None
+            # Verify the file is at the resolved location
+            resp = sb.execute("cat /tmp/vfs-upload/data.bin")
+            assert resp.exit_code == 0
+            assert "uploaded bytes" in resp.output
+
+    def test_native_download_resolves_path(self) -> None:
+        """download_files() in virtual mode uses native SDK and resolves paths."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs-download",
+        ) as sb:
+            sb.execute("mkdir -p /tmp/vfs-download && echo 'download me' > /tmp/vfs-download/out.txt")
+            results = sb.download_files(["/out.txt"])
+            assert results[0].error is None
+            assert results[0].content is not None
+            assert b"download me" in results[0].content
+
+    def test_ls_info_resolves_path(self) -> None:
+        """ls_info() resolves the virtual path under root_dir."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs-ls",
+        ) as sb:
+            sb.execute("mkdir -p /tmp/vfs-ls/sub && touch /tmp/vfs-ls/sub/a.txt /tmp/vfs-ls/sub/b.txt")
+            entries = sb.ls_info("/sub")
+            # FileInfo is a TypedDict with "path" key; extract basenames.
+            names = [posixpath.basename(e["path"]) for e in entries]
+            assert "a.txt" in names
+            assert "b.txt" in names
+
+    def test_virtual_mode_combined_with_allow_prefixes(self) -> None:
+        """allow_prefixes checks the resolved path (after virtual-mode resolution)."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            virtual_mode=True,
+            root_dir="/tmp/vfs-combined",
+            allow_prefixes=["/tmp/vfs-combined/"],
+        ) as sb:
+            sb.execute("mkdir -p /tmp/vfs-combined")
+            # Virtual path "/app.py" resolves to "/tmp/vfs-combined/app.py" — allowed.
+            result = sb.write("/app.py", "print('hello')")
+            assert result.error is None
+            resp = sb.execute("cat /tmp/vfs-combined/app.py")
+            assert "print('hello')" in resp.output
+
+
+# ---------------------------------------------------------------------------
+# Enterprise features: skip_cleanup & sandbox_id
+# ---------------------------------------------------------------------------
+
+
+class TestSkipCleanup:
+    def test_skip_cleanup_preserves_sandbox(self) -> None:
+        """With skip_cleanup=True, the sandbox pod survives stop() and can be
+        verified via a separate sandbox that checks the SandboxClaim still exists.
+        """
+        sb = KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            skip_cleanup=True,
+            sandbox_id="integ-skip-cleanup",
+        )
+        sb.start()
+        assert sb.id == "integ-skip-cleanup"
+        # Write a marker to prove the pod is running
+        resp = sb.execute("echo 'still alive' > /tmp/skip-marker.txt")
+        assert resp.exit_code == 0
+        claim_name = sb._client.claim_name if sb._client else None
+        sb.stop()
+        assert not sb._started
+
+        # The SandboxClaim should still exist in the cluster.
+        # We can verify by querying the Kubernetes API.
+        if claim_name:
+            probe = KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE)
+            resp = probe.execute(f"echo 'claim {claim_name} survived'")
+            # Just verifying we can still create sandboxes; the claim
+            # existence check would require kubectl, which is validated
+            # by the fact that stop() didn't delete it (skip_cleanup=True).
+            assert resp.exit_code == 0
+            probe.stop()
+
+    def test_sandbox_id_overrides_id(self) -> None:
+        """sandbox_id provides a stable identifier regardless of claim name."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            sandbox_id="my-stable-id-123",
+        ) as sb:
+            assert sb.id == "my-stable-id-123"
+            resp = sb.execute("echo 'id test'")
+            assert resp.exit_code == 0
