@@ -19,7 +19,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-langchain-k8s}"
 NAMESPACE="agent-sandbox-system"
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.1.1}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.2.1}"
 
 # Colours for output
 GREEN='\033[0;32m'
@@ -60,6 +60,9 @@ kubectl cluster-info --context "kind-${CLUSTER_NAME}" &>/dev/null
 
 # ── 2. Agent-sandbox controller + CRDs ───────────────────────────────
 
+info "Removing legacy StatefulSet controller (if present, required for v0.2.x migration)"
+kubectl delete statefulset agent-sandbox-controller -n "${NAMESPACE}" --ignore-not-found
+
 info "Installing agent-sandbox controller ${AGENT_SANDBOX_VERSION} (core manifests)"
 kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/manifest.yaml"
 
@@ -67,12 +70,12 @@ info "Installing agent-sandbox extensions ${AGENT_SANDBOX_VERSION} (SandboxTempl
 kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/extensions.yaml"
 
 info "Enabling extensions in the controller"
-kubectl patch statefulset agent-sandbox-controller \
+kubectl patch deployment agent-sandbox-controller \
     -n "${NAMESPACE}" \
     -p '{"spec": {"template": {"spec": {"containers": [{"name": "agent-sandbox-controller", "args": ["--extensions=true"]}]}}}}'
 
 info "Waiting for controller to be ready"
-kubectl rollout status statefulset/agent-sandbox-controller \
+kubectl rollout status deployment/agent-sandbox-controller \
     -n "${NAMESPACE}" --timeout=120s
 
 # ── 3. Sandbox router ────────────────────────────────────────────────

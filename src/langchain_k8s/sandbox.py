@@ -470,13 +470,13 @@ class KubernetesSandbox(BaseSandbox):
         self,
         paths: list[str],
     ) -> list[FileDownloadResponse]:
-        """Download files from the sandbox.
+        """Download files from the sandbox via base64-encoded shell commands.
 
-        When ``virtual_mode=True`` the native SDK HTTP transfer is used.
-        Otherwise files are read via base64-encoded shell commands.
+        Shell-based downloads are used unconditionally because the
+        ``k8s-agent-sandbox`` v0.2.1 runtime restricts its native
+        ``/download`` endpoint to the ``/app`` directory, making it
+        incompatible with arbitrary absolute paths.
         """
-        if self._virtual_mode:
-            return self._download_files_native(paths)
         return self._download_files_shell(paths)
 
     def _download_files_shell(

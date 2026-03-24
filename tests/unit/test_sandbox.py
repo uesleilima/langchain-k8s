@@ -986,21 +986,29 @@ class TestVirtualMode:
             assert "base64" in cmd
             sb.stop()
 
-    def test_native_download_when_virtual_mode_true(self) -> None:
-        mock = make_mock_client()
-        mock.read.return_value = b"native content"
+    def test_shell_download_when_virtual_mode_true(self) -> None:
+        """download_files() always uses shell-based download, even in virtual mode.
+
+        The k8s-agent-sandbox v0.2.1 runtime restricts native /download to
+        /app, making it incompatible with arbitrary absolute paths.
+        """
+        import base64 as b64
+
+        encoded = b64.b64encode(b"shell content").decode("ascii")
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             results = sb.download_files(["/src/test.txt"])
-            assert results[0].content == b"native content"
+            assert results[0].content == b"shell content"
             assert results[0].error is None
-            # Resolved path should be passed to client.read().
-            mock.read.assert_called_once_with("/workspace/src/test.txt")
+            cmd = mock.run.call_args[0][0]
+            assert "base64" in cmd
+            assert "/workspace/src/test.txt" in cmd
+            mock.read.assert_not_called()
             sb.stop()
 
-    def test_native_download_file_not_found(self) -> None:
-        mock = make_mock_client()
-        mock.read.side_effect = RuntimeError("404 not found")
+    def test_download_file_not_found_virtual_mode(self) -> None:
+        mock = make_mock_client(run_result=FakeExecutionResult(stderr="No such file or directory", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["/missing.txt"])
@@ -1008,9 +1016,8 @@ class TestVirtualMode:
             assert results[0].error == "file_not_found"
             sb.stop()
 
-    def test_native_download_permission_denied(self) -> None:
-        mock = make_mock_client()
-        mock.read.side_effect = RuntimeError("403 Permission denied")
+    def test_download_permission_denied_virtual_mode(self) -> None:
+        mock = make_mock_client(run_result=FakeExecutionResult(stderr="Permission denied", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["/secret.txt"])
@@ -1018,9 +1025,11 @@ class TestVirtualMode:
             assert results[0].error == "permission_denied"
             sb.stop()
 
-    def test_native_download_relative_path_resolved_in_virtual_mode(self) -> None:
-        mock = make_mock_client()
-        mock.read.return_value = b"resolved content"
+    def test_download_relative_path_resolved_in_virtual_mode(self) -> None:
+        import base64 as b64
+
+        encoded = b64.b64encode(b"resolved content").decode("ascii")
+        mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["relative.txt"])
@@ -1028,10 +1037,11 @@ class TestVirtualMode:
             # /workspace/relative.txt which is a valid absolute path.
             assert results[0].error is None
             assert results[0].content == b"resolved content"
-            mock.read.assert_called_once_with("/workspace/relative.txt")
+            cmd = mock.run.call_args[0][0]
+            assert "/workspace/relative.txt" in cmd
             sb.stop()
 
-    def test_native_download_blocks_traversal(self) -> None:
+    def test_download_blocks_traversal_virtual_mode(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
@@ -1040,16 +1050,20 @@ class TestVirtualMode:
             assert results[0].content is None
             sb.stop()
 
-    def test_native_download_multiple_files(self) -> None:
-        mock = make_mock_client()
+    def test_download_multiple_files_virtual_mode(self) -> None:
+        import base64 as b64
+
         call_count = 0
 
-        def read_effect(path: str) -> bytes:
+        def run_effect(cmd: str, timeout: int = 60) -> FakeExecutionResult:
             nonlocal call_count
             call_count += 1
-            return f"content-{call_count}".encode()
+            return FakeExecutionResult(
+                stdout=b64.b64encode(f"content-{call_count}".encode()).decode() + "\n", exit_code=0
+            )
 
-        mock.read = read_effect
+        mock = make_mock_client()
+        mock.run = run_effect
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["/a.txt", "/b.txt"])

@@ -471,7 +471,7 @@ class TestVirtualMode:
             assert "uploaded bytes" in resp.output
 
     def test_native_download_resolves_path(self) -> None:
-        """download_files() in virtual mode uses native SDK and resolves paths."""
+        """download_files() in virtual mode resolves paths under root_dir."""
         with KubernetesSandbox(
             template_name=TEMPLATE,
             namespace=NAMESPACE,
