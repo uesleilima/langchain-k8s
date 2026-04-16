@@ -7,7 +7,7 @@ The KubernetesSandbox was extended with three enterprise features: policy hooks,
 1. **`deny_prefixes` → `allow_prefixes`**: An allowlist approach instead of a denylist. When `allow_prefixes` is set, ONLY paths with those prefixes are permitted. When unset (`None`), everything is allowed (backward compatible).
 2. **`virtual_mode` needs `root_dir`**: Following `FilesystemBackend`'s pattern, virtual mode requires a root directory to anchor paths. All file operation methods resolve virtual paths under `root_dir` before delegating to `super()`.
 
-Feature 3 (`skip_cleanup` + `sandbox_id`) was correctly implemented from the start and unchanged.
+Feature 3 (`skip_cleanup`) was correctly implemented from the start and unchanged.
 
 ---
 
@@ -30,6 +30,7 @@ Feature 3 (`skip_cleanup` + `sandbox_id`) was correctly implemented from the sta
    - `None` → `self._allow_prefixes = None` (no policy)
    - `["/workspace"]` → `self._allow_prefixes = ("/workspace/",)`
 4. Replaced `_check_deny_prefix()` with `_check_allow_prefix()`:
+
    ```python
    def _check_allow_prefix(self, file_path: str) -> str | None:
        if self._allow_prefixes is None:
@@ -39,6 +40,7 @@ Feature 3 (`skip_cleanup` + `sandbox_id`) was correctly implemented from the sta
                return None  # allowed
        return f"Path {file_path!r} is not under any allowed prefix: {self._allow_prefixes}"
    ```
+
 5. Updated `write()` and `edit()` overrides to call `_check_allow_prefix()` **after** `_resolve_virtual_path()` so the check runs against the resolved absolute path (not the virtual path). This means with `root_dir="/workspace"` and `allow_prefixes=["/workspace/"]`, a virtual path `/src/main.py` resolves to `/workspace/src/main.py` and passes the allow check.
 
 ### Tests: `TestAllowPrefixes` (~9 tests)
@@ -57,6 +59,7 @@ Feature 3 (`skip_cleanup` + `sandbox_id`) was correctly implemented from the sta
 ### Design Rationale
 
 Following `FilesystemBackend`'s pattern, `virtual_mode=True` anchors all paths under a `root_dir`. This enables:
+
 - Path containment: agents cannot escape `root_dir`
 - Path traversal blocking: `..` and `~` rejected
 - Clean virtual path semantics for `CompositeBackend` compatibility
@@ -84,6 +87,7 @@ Following `FilesystemBackend`'s pattern, `virtual_mode=True` anchors all paths u
    - Stored as `self._root_dir: str | None` and `self._virtual_mode: bool`
 
 2. **New method `_resolve_virtual_path()`**:
+
    ```python
    def _resolve_virtual_path(self, path: str) -> str:
        if not self._virtual_mode or self._root_dir is None:
@@ -136,18 +140,63 @@ Following `FilesystemBackend`'s pattern, `virtual_mode=True` anchors all paths u
 
 ### Implementation in `src/langchain_k8s/sandbox.py`
 
-- `skip_cleanup: bool = False` — when `True`, `_destroy_sandbox()` temporarily nulls `claim_name` before calling `__exit__()` so the SDK skips CRD deletion while still cleaning up local resources (port-forward, tracing). `claim_name` is restored afterward.
-- `sandbox_id: str | None = None` — when set, the `id` property returns this value instead of the Kubernetes claim name or auto-generated UUID. Useful for logging and correlation.
+- `skip_cleanup: bool = False` — when `True`, `_destroy_sandbox()` calls `_close_connection()` to release local resources (port-forward, tracing) without deleting the Kubernetes `SandboxClaim`. The sandbox pod continues running.
 
-### Tests: `TestSkipCleanup` (~9 tests)
+### Tests: `TestSkipCleanup` (~6 tests)
 
 - `skip_cleanup` default is `False`
-- `sandbox_id` default is `None`
-- `sandbox_id` overrides `id` property (both before and after start)
-- `skip_cleanup=True` nulls `claim_name` during `__exit__` and restores after
-- Normal stop keeps `claim_name` during `__exit__`
+- `skip_cleanup=True` calls `_close_connection()` instead of `delete_sandbox()`
+- Normal stop calls `delete_sandbox()`
 - Context manager respects `skip_cleanup`
-- Tolerates `__exit__` errors
+- Tolerates `_close_connection()` errors
+
+---
+
+## Feature 4: Sandbox Reconnection & Labels
+
+### Design Rationale
+
+With SDK v0.3.10, `SandboxClient.get_sandbox(claim_name)` can re-attach to an existing sandbox. Combined with `skip_cleanup=True`, this enables full lifecycle management across agent process restarts:
+
+1. Agent creates sandbox with `skip_cleanup=True`, persists `claim_name`
+2. Agent process restarts (pod eviction, rolling update, crash)
+3. New agent instance passes saved `claim_name` to reconnect without creating a new pod
+
+Labels allow tagging sandboxes at creation for discovery and filtering.
+
+### Implementation in `src/langchain_k8s/sandbox.py`
+
+1. **`claim_name: str | None = None` parameter** — when set, `_ensure_sandbox()` calls `client.get_sandbox(claim_name, namespace)` instead of `client.create_sandbox(...)`. The SDK verifies the SandboxClaim exists in Kubernetes and re-establishes the connection (port-forward, tracing).
+
+2. **`labels: dict[str, str] | None = None` parameter** — passed to `client.create_sandbox(labels=...)` at creation time. Ignored when `claim_name` is set (reconnecting). The SDK validates label name/value format.
+
+3. **`claim_name` property (read-only)** — returns the live handle's `claim_name` if connected, the constructor's `claim_name` if set but not yet connected, or `None`. Callers persist this value to reconnect later.
+
+### Tests: `TestClaimName` (~5 tests), `TestReconnect` (~6 tests), `TestLabels` (~5 tests)
+
+**TestClaimName:**
+
+- `claim_name` is `None` before start (no constructor value)
+- Returns handle's claim_name after start
+- Returns constructor value before start when set
+- Live handle takes precedence over constructor value
+- Returns `None` after stop (no constructor value)
+
+**TestReconnect:**
+
+- `claim_name` set → calls `get_sandbox()`, not `create_sandbox()`
+- Execute works after reconnect
+- Reconnect + `skip_cleanup` uses `_close_connection()` on stop
+- `id` uses claim_name from live handle
+- No `claim_name` → normal `create_sandbox()` path
+
+**TestLabels:**
+
+- Default is `None`
+- Stored on construction
+- Passed to `create_sandbox(labels=...)`
+- `None` labels passed as `None`
+- Labels ignored on reconnect (`get_sandbox` has no labels arg)
 
 ---
 
@@ -169,8 +218,9 @@ def __init__(
     allow_prefixes: list[str] | None = None,    # Feature 1
     root_dir: str | None = None,                 # Feature 2
     virtual_mode: bool = False,                   # Feature 2
-    sandbox_id: str | None = None,               # Feature 3
     skip_cleanup: bool = False,                   # Feature 3
+    claim_name: str | None = None,               # Feature 4
+    labels: dict[str, str] | None = None,        # Feature 4
 ) -> None:
 ```
 
@@ -180,9 +230,11 @@ def __init__(
 
 | File | Changes |
 |------|---------|
-| `src/langchain_k8s/sandbox.py` | Replaced deny→allow, added root_dir + path resolution, overrode read/ls_info/glob_info/grep_raw, skip_cleanup + sandbox_id |
-| `tests/unit/test_sandbox.py` | Replaced `TestDenyPrefixes` → `TestAllowPrefixes`, updated `TestVirtualMode` for root_dir + path resolution, added `TestSkipCleanup` |
-| `README.md` | Added enterprise features section (allow_prefixes, virtual_mode, skip_cleanup, sticky sessions, updated config reference) |
+| `src/langchain_k8s/sandbox.py` | Replaced deny→allow, added root_dir + path resolution, overrode read/ls_info/glob_info/grep_raw, skip_cleanup, claim_name reconnect, labels, claim_name property |
+| `tests/unit/test_sandbox.py` | Replaced `TestDenyPrefixes` → `TestAllowPrefixes`, updated `TestVirtualMode` for root_dir + path resolution, added `TestSkipCleanup`, `TestClaimName`, `TestReconnect`, `TestLabels` |
+| `tests/integration/test_kind.py` | Added `TestReconnect` (reconnect to existing sandbox, claim_name property), `TestLabels` (labels applied to sandbox) |
+| `tests/conftest.py` | Added `get_sandbox` mock to `make_mock_client()` |
+| `README.md` | Added enterprise features section (allow_prefixes, virtual_mode, skip_cleanup, sticky sessions, reconnect, labels, updated config reference) |
 | `specs/plans/enterprise-features.md` | This plan document |
 
 ---
@@ -190,7 +242,8 @@ def __init__(
 ## Verification
 
 ```bash
-uv run pytest tests/unit/ -v           # 113 tests pass
+uv run pytest tests/unit/ -v           # 128 tests pass
+uv run pytest tests/integration/ -v    # 60 tests pass
 uv run ruff check src/ tests/          # No lint errors
 uv run pyright src/                    # 0 errors (pre-existing warnings only)
 ```

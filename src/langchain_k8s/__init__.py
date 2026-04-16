@@ -1,6 +1,6 @@
 """Kubernetes Agent Sandbox integration for LangChain Deep Agents."""
 
 from langchain_k8s._version import __version__
-from langchain_k8s.sandbox import KubernetesSandbox
+from langchain_k8s.sandbox import KubernetesSandbox, create_kubernetes_sandbox
 
-__all__ = ["KubernetesSandbox", "__version__"]
+__all__ = ["KubernetesSandbox", "create_kubernetes_sandbox", "__version__"]

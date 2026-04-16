@@ -92,7 +92,7 @@ class TestDeepAgentExecute:
         assert "hello world" in messages[3].content
 
         # Verify the backend actually received the command
-        mock.run.assert_called_once_with("sh -c 'echo hello world'", timeout=300)
+        mock._mock_sandbox_handle.commands.run.assert_called_once_with("sh -c 'echo hello world'", timeout=300)
         backend.stop()
 
     def test_execute_failed_command(self) -> None:
@@ -139,7 +139,7 @@ class TestDeepAgentExecute:
             return FakeExecutionResult(stdout="hello from file\n", exit_code=0)
 
         mock = make_mock_client()
-        mock.run = multi_run
+        mock._mock_sandbox_handle.commands.run = multi_run
 
         result, backend = _run_agent(
             responses=[
@@ -245,7 +245,7 @@ class TestDeepAgentLifecycle:
         # Agent responded without tool calls → sandbox was never started
         assert not backend._started
         assert "don't need to run anything" in result["messages"][-1].content
-        mock.__enter__.assert_not_called()
+        mock.create_sandbox.assert_not_called()
 
     def test_backend_started_after_execute(self) -> None:
         """Sandbox is lazily started when the agent calls execute."""
@@ -272,5 +272,5 @@ class TestDeepAgentLifecycle:
         )
 
         assert backend._started
-        mock.__enter__.assert_called_once()
+        mock.create_sandbox.assert_called_once()
         backend.stop()

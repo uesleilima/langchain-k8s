@@ -24,15 +24,26 @@ uv add langchain-k8s
 
 ## Quick start
 
+### Ecosystem-standard mode (recommended)
+
+Pass a pre-created `k8s_agent_sandbox.Sandbox` handle — the standard LangChain Deep Agents sandbox backend pattern. Lifecycle management stays with the caller:
+
 ```python
+from k8s_agent_sandbox import SandboxClient
+from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
 from langchain_anthropic import ChatAnthropic
 from deepagents import create_deep_agent
 from langchain_k8s import KubernetesSandbox
 
-backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+client = SandboxClient(
+    connection_config=SandboxLocalTunnelConnectionConfig(),
+)
+handle = client.create_sandbox(
+    template="python-sandbox-template",
     namespace="agent-sandbox-system",
 )
+
+backend = KubernetesSandbox(sandbox=handle)
 
 agent = create_deep_agent(
     model=ChatAnthropic(model="claude-sonnet-4-20250514"),
@@ -44,12 +55,30 @@ result = agent.invoke(
     {"messages": [{"role": "user", "content": "Create a Python script that prints the Fibonacci sequence"}]}
 )
 
+client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
+```
+
+### Config-based mode (convenience)
+
+For simpler setups, pass `template_name` and connection parameters directly. The sandbox is created lazily on first use and destroyed on `stop()`:
+
+```python
+from langchain_k8s import KubernetesSandbox
+
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+)
+
+agent = create_deep_agent(model=model, backend=backend, ...)
+result = agent.invoke({"messages": [...]})
+
 backend.stop()
 ```
 
 ## Usage
 
-### Context manager (recommended)
+### Context manager
 
 ```python
 with KubernetesSandbox(
@@ -61,38 +90,37 @@ with KubernetesSandbox(
 # Sandbox pod is automatically cleaned up
 ```
 
-### Explicit lifecycle
-
-```python
-backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
-    namespace="agent-sandbox-system",
-)
-backend.start()
-try:
-    resp = backend.execute("python3 --version")
-    print(resp.output)
-finally:
-    backend.stop()
-```
-
 ### Direct execution
 
 ```python
-with KubernetesSandbox(
-    template_name="python-sandbox-template",
+from k8s_agent_sandbox import SandboxClient
+from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
+from langchain_k8s import KubernetesSandbox
+
+client = SandboxClient(
+    connection_config=SandboxLocalTunnelConnectionConfig(),
+)
+handle = client.create_sandbox(
+    template="python-sandbox-template",
     namespace="agent-sandbox-system",
-) as backend:
-    # Execute commands
-    resp = backend.execute("echo 'Hello from K8s!'")
-    print(resp.output, resp.exit_code)
+)
 
-    # Upload files
-    backend.upload_files([("/workspace/script.py", b"print('hello')\n")])
+backend = KubernetesSandbox(sandbox=handle)
 
-    # Download files
-    results = backend.download_files(["/workspace/script.py"])
-    print(results[0].content)
+# Execute commands (with optional per-call timeout)
+resp = backend.execute("echo 'Hello from K8s!'")
+print(resp.output, resp.exit_code)
+
+resp = backend.execute("python3 long_script.py", timeout=600)
+
+# Upload files
+backend.upload_files([("/workspace/script.py", b"print('hello')\n")])
+
+# Download files
+results = backend.download_files(["/workspace/script.py"])
+print(results[0].content)
+
+client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
 ```
 
 ## Connection modes
@@ -125,11 +153,65 @@ backend = KubernetesSandbox(
 )
 ```
 
-## Sandbox lifecycle strategies
+## Sandbox lifecycle
 
-Control how sandboxes are managed across multiple agent invocations via the `reuse_sandbox` parameter:
+### Thread-scoped (production)
 
-### Persistent (default)
+Use `create_kubernetes_sandbox()` for thread-scoped sandboxes in production. It implements a get-or-create pattern: if a sandbox with the given `claim_name` already exists, it is reused; otherwise a new one is created.
+
+Define a graph factory that provisions a sandbox per conversation thread:
+
+```python
+from langchain_anthropic import ChatAnthropic
+from deepagents import create_deep_agent
+from k8s_agent_sandbox import SandboxClient
+from k8s_agent_sandbox.models import SandboxGatewayConnectionConfig
+from langchain_k8s import create_kubernetes_sandbox
+from langchain_core.runnables import RunnableConfig
+
+client = SandboxClient(
+    connection_config=SandboxGatewayConnectionConfig(gateway_name="sandbox-gw"),
+)
+
+async def make_agent(config: RunnableConfig):
+    """Graph factory — each thread_id gets its own sandbox."""
+    thread_id = config["configurable"]["thread_id"]
+    backend = create_kubernetes_sandbox(
+        client=client,
+        claim_name=f"sandbox-{thread_id}",
+        template_name="python-sandbox-template",
+        namespace="agent-sandbox-system",
+        labels={"thread_id": thread_id},
+    )
+    return create_deep_agent(
+        model=ChatAnthropic(model="claude-sonnet-4-20250514"),
+        backend=backend,
+    )
+```
+
+Each conversation thread gets its own sandbox. When the thread resumes, the existing sandbox is found by `claim_name` and reused with its filesystem state intact:
+
+```python
+# Turn 1 — user starts a new conversation, sandbox is created
+config = {"configurable": {"thread_id": "user-session-abc"}}
+agent = await make_agent(config)
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "Write a Python script that fetches weather data"}]}
+)
+# Agent writes files to the sandbox filesystem...
+
+# Turn 2 — user continues the conversation, same sandbox is reused
+agent = await make_agent(config)  # get-or-create finds the existing pod
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "Now add error handling to the script"}]}
+)
+# Agent can read/modify files from turn 1 — filesystem state persists
+
+# Clean up when the conversation ends
+client.delete_sandbox(f"sandbox-user-session-abc", "agent-sandbox-system")
+```
+
+### Persistent (config-based, default)
 
 ```python
 backend = KubernetesSandbox(
@@ -141,7 +223,7 @@ backend = KubernetesSandbox(
 
 One sandbox pod is created lazily and reused across all calls. Fast for cached, long-lived agents. Filesystem state persists between invocations. Auto-reconnects if the pod dies.
 
-### Ephemeral
+### Ephemeral (config-based)
 
 ```python
 backend = KubernetesSandbox(
@@ -163,33 +245,31 @@ Restrict which directories agents can write to using `allow_prefixes`. When set,
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
-    allow_prefixes=["/workspace/", "/tmp/"],
+    allow_prefixes=["/tmp/"],
 )
 ```
 
 When `allow_prefixes` is `None` (the default), no write restrictions are applied.
 
-> **Note:** This is a tool-level policy. It does not block `execute("echo bad > /etc/passwd")`. Use the Kubernetes pod `securityContext` (e.g. `readOnlyRootFilesystem`) for system-level protection.
+> **Note:** `allow_prefixes` is a tool-level policy — it controls which paths `write()` and `edit()` accept, but does not block shell commands like `execute("echo bad > /etc/passwd")`. Use the Kubernetes pod `securityContext` (e.g. `readOnlyRootFilesystem`) for system-level protection. The allowed directories must also be **writable inside the container** — see [Container permissions vs. sandbox policy](#container-permissions-vs-sandbox-policy).
 
 ### Virtual filesystem
 
-When `virtual_mode=True`, all file-operation paths (`read`, `write`, `edit`, `ls`, `grep`, `glob`, uploads, downloads) are resolved under `root_dir` (default `/workspace`). Path traversal (`..`, `~`) is rejected.
+When `virtual_mode=True`, all file-operation paths (`read`, `write`, `edit`, `ls`, `grep`, `glob`, uploads, downloads) are resolved under `root_dir` (default `/tmp`). Path traversal (`..`, `~`) is rejected.
 
 ```python
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
     virtual_mode=True,
-    root_dir="/workspace",  # default when virtual_mode=True
+    root_dir="/tmp",
 )
 
-# Agent sees virtual paths — resolved under /workspace automatically:
-#   write("/src/main.py", ...)  →  writes to /workspace/src/main.py
-#   read("/src/main.py")        →  reads from /workspace/src/main.py
-#   upload_files([("/data/input.csv", content)])  →  /workspace/data/input.csv
+# Agent sees virtual paths — resolved under /tmp automatically:
+#   write("/src/main.py", ...)  →  writes to /tmp/src/main.py
+#   read("/src/main.py")        →  reads from /tmp/src/main.py
+#   upload_files([("/data/input.csv", content)])  →  /tmp/data/input.csv
 ```
-
-In virtual mode, `download_files()` uses the native SDK HTTP transfer (`SandboxClient.read()`) for better performance. Uploads continue to use shell commands because the SDK `write()` method only preserves the file basename.
 
 When combined with `allow_prefixes`, the policy check runs against the **resolved** path:
 
@@ -198,12 +278,59 @@ backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
     virtual_mode=True,
-    root_dir="/workspace",
-    allow_prefixes=["/workspace/"],
+    root_dir="/tmp",
+    allow_prefixes=["/tmp/"],
 )
-# Virtual path "/src/main.py" resolves to "/workspace/src/main.py" — allowed
+# Virtual path "/src/main.py" resolves to "/tmp/src/main.py" — allowed
 # Virtual path "../../etc/passwd" — rejected (path traversal)
 ```
+
+### Container permissions vs. sandbox policy
+
+`allow_prefixes` and `virtual_mode` are **tool-level policies** enforced by `KubernetesSandbox` *before* any command reaches the container. They do **not** grant filesystem permissions inside the container itself.
+
+For file operations to succeed, two conditions must be met:
+
+1. **Sandbox policy allows the path** — `allow_prefixes` check passes (or is not set)
+2. **Container OS user can write to the path** — the directory exists and is writable inside the container
+
+If a `write()` or `edit()` call passes the sandbox policy but fails with `PermissionError`, the container's filesystem permissions are the cause. The sandbox logs a warning when this happens:
+
+```
+WARNING  langchain_k8s.sandbox: write: container permission denied for path='/src/main.py'
+(resolved='/workspace/src/main.py'). The sandbox policy (allow_prefixes) permits this path,
+but the container's OS user cannot write to it.
+```
+
+**Common writable locations** (no extra configuration needed):
+
+| Directory | Notes |
+|-----------|-------|
+| `/tmp` | Always writable; good default for `root_dir` |
+| `/home/<user>` | Writable if the container runs as that user |
+
+**Making a custom directory writable** in your `SandboxTemplate`:
+
+```yaml
+apiVersion: agents.x-k8s.io/v1alpha1
+kind: SandboxTemplate
+metadata:
+  name: python-sandbox-template
+spec:
+  template:
+    spec:
+      containers:
+        - name: sandbox
+          image: python:3.12-slim
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}
+```
+
+With this configuration, `/workspace` is backed by an `emptyDir` volume and is writable regardless of the container's root filesystem permissions. You can then safely use `root_dir="/workspace"` and `allow_prefixes=["/workspace/"]`.
 
 ### Horizontal scaling and sticky sessions
 
@@ -255,41 +382,99 @@ spec:
                   number: 80
 ```
 
-### Preserving sandboxes across restarts
+### Preserving sandboxes and reconnection
 
-Set `skip_cleanup=True` to prevent sandbox pod destruction when `stop()` is called. The Kubernetes `SandboxClaim` is preserved so the sandbox pod continues running. Use `sandbox_id` for stable identification across service restarts.
+Set `skip_cleanup=True` to prevent sandbox pod destruction when `stop()` is called. The Kubernetes `SandboxClaim` is preserved so the sandbox pod continues running.
+
+When an agent process restarts (pod eviction, rolling update, crash), it can reconnect to the still-running sandbox by passing the original `claim_name`. Persist the `claim_name` property after `start()` and use it on the next instantiation:
+
+```python
+# First run — create sandbox and persist claim name
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    skip_cleanup=True,
+)
+backend.start()
+redis.set("sandbox:user-123", backend.claim_name)  # persist for reconnection
+```
+
+```python
+# After restart — reconnect to the same pod
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    claim_name=redis.get("sandbox:user-123"),  # re-attach, no new pod
+    skip_cleanup=True,
+)
+backend.start()  # re-establishes connection to existing pod
+resp = backend.execute("cat /workspace/previous-work.py")  # state is preserved
+```
+
+The sandbox pod must be cleaned up externally when no longer needed (e.g. Kubernetes TTL controller, CronJob, or manual deletion).
+
+### Sandbox labels
+
+Tag sandboxes at creation with Kubernetes labels for discovery, filtering, and cleanup policies:
 
 ```python
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
+    labels={
+        "session": "abc-123",
+        "agent-id": "code-reviewer",
+        "team": "platform",
+    },
     skip_cleanup=True,
-    sandbox_id="user-session-123",
 )
 ```
 
-The sandbox pod must be cleaned up externally (e.g. Kubernetes TTL controller, CronJob, or manual deletion).
+Labels are applied to the `SandboxClaim` resource and can be used with `kubectl`:
 
-> **Note:** Full sandbox reconnection (multiple service instances sharing the same Kubernetes pod) requires upstream SDK support for deterministic claim names. Currently each `start()` call creates a new `SandboxClaim`.
+```bash
+# List sandboxes for a specific session
+kubectl get sandboxclaims -l session=abc-123
+
+# Clean up all sandboxes for a team
+kubectl delete sandboxclaims -l team=platform
+```
+
+Labels are only applied at creation time. When reconnecting via `claim_name`, the existing labels on the `SandboxClaim` are preserved.
 
 ## Configuration reference
 
+### `KubernetesSandbox` constructor
+
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `template_name` | `str` | *(required)* | `SandboxTemplate` CRD name |
+| `sandbox` | `Sandbox \| None` | `None` | Pre-created `k8s_agent_sandbox.Sandbox` handle (ecosystem-standard mode) |
+| `template_name` | `str \| None` | `None` | `SandboxTemplate` CRD name. Required when `sandbox` is not provided |
 | `namespace` | `str` | `"default"` | Kubernetes namespace |
-| `gateway_name` | `str \| None` | `None` | Gateway name (production mode) |
+| `gateway_name` | `str \| None` | `None` | Gateway name (production mode, config-based only) |
 | `gateway_namespace` | `str` | `"default"` | Gateway namespace |
-| `api_url` | `str \| None` | `None` | Direct router URL (advanced mode) |
+| `api_url` | `str \| None` | `None` | Direct router URL (advanced mode, config-based only) |
 | `server_port` | `int` | `8888` | Sandbox runtime port |
-| `reuse_sandbox` | `bool` | `True` | Reuse sandbox across calls |
+| `reuse_sandbox` | `bool` | `True` | Reuse sandbox across calls (config-based only) |
 | `max_output_size` | `int` | `1048576` | Max output bytes before truncation |
-| `command_timeout` | `int` | `300` | Command timeout in seconds |
+| `command_timeout` | `int` | `300` | Default command timeout in seconds. Can be overridden per-call via `execute(timeout=...)` |
 | `allow_prefixes` | `list[str] \| None` | `None` | Restrict `write`/`edit` to these path prefixes |
-| `root_dir` | `str \| None` | `None` | Root directory for virtual filesystem mode |
+| `root_dir` | `str \| None` | `None` | Root directory for virtual filesystem mode. Defaults to `/tmp` when `virtual_mode=True` |
 | `virtual_mode` | `bool` | `False` | Resolve all paths under `root_dir` |
-| `sandbox_id` | `str \| None` | `None` | Stable identifier (overrides auto-generated ID) |
-| `skip_cleanup` | `bool` | `False` | Preserve `SandboxClaim` on `stop()` |
+| `skip_cleanup` | `bool` | `False` | Preserve `SandboxClaim` on `stop()` (config-based only) |
+| `claim_name` | `str \| None` | `None` | Reconnect to existing sandbox by claim name. Cannot be combined with `sandbox` |
+| `labels` | `dict[str, str] \| None` | `None` | Kubernetes labels applied to `SandboxClaim` |
+
+### `create_kubernetes_sandbox()` factory
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `client` | `SandboxClient` | *(required)* | `k8s_agent_sandbox.SandboxClient` instance |
+| `claim_name` | `str` | *(required)* | `SandboxClaim` name to look up or create |
+| `template_name` | `str` | *(required)* | `SandboxTemplate` CRD name (used when creating) |
+| `namespace` | `str` | `"default"` | Kubernetes namespace |
+| `labels` | `dict[str, str] \| None` | `None` | Labels applied at creation time |
+| `**kwargs` | | | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
 
 ## Development
 
@@ -304,7 +489,7 @@ uv run pytest tests/unit/ -v
 
 # Lint and type check
 uv run ruff check src/ tests/
-uv run mypy src/
+uv run pyright src/
 ```
 
 ### Integration tests with Kind
@@ -327,10 +512,10 @@ uv run pytest tests/integration/ -v -m integration
 The setup script will:
 
 1. Create a Kind cluster named `langchain-k8s`
-2. Install the agent-sandbox controller and extension CRDs (v0.1.1)
+2. Install the agent-sandbox controller and extension CRDs (v0.3.10)
 3. Enable the extensions controller
 4. Deploy the sandbox router
-6. Apply the `python-sandbox-template` SandboxTemplate
+5. Apply the `python-sandbox-template` SandboxTemplate
 
 ```
 k8s/

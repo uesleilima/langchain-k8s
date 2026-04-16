@@ -28,7 +28,7 @@ from collections.abc import Generator
 
 import pytest
 
-from langchain_k8s import KubernetesSandbox
+from langchain_k8s import KubernetesSandbox, create_kubernetes_sandbox
 
 pytestmark = pytest.mark.integration
 
@@ -426,7 +426,9 @@ class TestVirtualMode:
             assert "virtual content" in resp.output
             # read() should also resolve the virtual path
             content = sb.read("/hello.txt")
-            assert "virtual content" in content
+            assert content.error is None
+            assert content.file_data is not None
+            assert "virtual content" in content.file_data["content"]
 
     def test_edit_under_root_dir(self) -> None:
         """edit() resolves virtual paths under root_dir."""
@@ -517,7 +519,7 @@ class TestVirtualMode:
 
 
 # ---------------------------------------------------------------------------
-# Enterprise features: skip_cleanup & sandbox_id
+# Enterprise features: skip_cleanup
 # ---------------------------------------------------------------------------
 
 
@@ -530,14 +532,13 @@ class TestSkipCleanup:
             template_name=TEMPLATE,
             namespace=NAMESPACE,
             skip_cleanup=True,
-            sandbox_id="integ-skip-cleanup",
         )
         sb.start()
-        assert sb.id == "integ-skip-cleanup"
+        assert sb.id is not None
         # Write a marker to prove the pod is running
         resp = sb.execute("echo 'still alive' > /tmp/skip-marker.txt")
         assert resp.exit_code == 0
-        claim_name = sb._client.claim_name if sb._client else None
+        claim_name = sb._sandbox.claim_name if sb._sandbox else None
         sb.stop()
         assert not sb._started
 
@@ -552,13 +553,140 @@ class TestSkipCleanup:
             assert resp.exit_code == 0
             probe.stop()
 
-    def test_sandbox_id_overrides_id(self) -> None:
-        """sandbox_id provides a stable identifier regardless of claim name."""
+
+# ---------------------------------------------------------------------------
+# Reconnect via claim_name
+# ---------------------------------------------------------------------------
+
+
+class TestReconnect:
+    def test_reconnect_to_existing_sandbox(self) -> None:
+        """Create a sandbox with skip_cleanup, stop, reconnect via claim_name,
+        and verify the same pod (with its filesystem state) is reused.
+        """
+        # Phase 1: create sandbox and write a marker file.
+        sb1 = KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            skip_cleanup=True,
+        )
+        sb1.start()
+        resp = sb1.execute("echo 'reconnect-marker' > /tmp/reconnect-test.txt")
+        assert resp.exit_code == 0
+        saved_claim = sb1.claim_name
+        assert saved_claim is not None
+        sb1.stop()
+
+        # Phase 2: reconnect using claim_name and read the marker file.
+        try:
+            sb2 = KubernetesSandbox(
+                template_name=TEMPLATE,
+                namespace=NAMESPACE,
+                claim_name=saved_claim,
+            )
+            sb2.start()
+            resp = sb2.execute("cat /tmp/reconnect-test.txt")
+            assert resp.exit_code == 0
+            assert "reconnect-marker" in resp.output
+            assert sb2.claim_name == saved_claim
+        finally:
+            # Clean up: delete the sandbox properly.
+            if sb2._started:
+                sb2._skip_cleanup = False
+                sb2.stop()
+
+    def test_claim_name_property_available_after_start(self) -> None:
+        """claim_name is populated after start and can be persisted."""
         with KubernetesSandbox(
             template_name=TEMPLATE,
             namespace=NAMESPACE,
-            sandbox_id="my-stable-id-123",
         ) as sb:
-            assert sb.id == "my-stable-id-123"
-            resp = sb.execute("echo 'id test'")
+            assert sb.claim_name is not None
+            assert sb.claim_name.startswith("sandbox-claim-")
+
+
+# ---------------------------------------------------------------------------
+# Labels
+# ---------------------------------------------------------------------------
+
+
+class TestLabels:
+    def test_labels_applied_to_sandbox(self) -> None:
+        """Sandboxes created with labels can be inspected via kubectl."""
+        with KubernetesSandbox(
+            template_name=TEMPLATE,
+            namespace=NAMESPACE,
+            labels={"test-suite": "integration", "feature": "labels"},
+        ) as sb:
+            assert sb.claim_name is not None
+            resp = sb.execute("echo 'labels work'")
             assert resp.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Ecosystem-standard mode: external SandboxClient + KubernetesSandbox wrapper
+# ---------------------------------------------------------------------------
+
+
+class TestEcosystemStandardMode:
+    def test_external_handle_execute(self) -> None:
+        """Create sandbox externally via SandboxClient, wrap with
+        KubernetesSandbox(sandbox=handle), and execute commands.
+        """
+        from k8s_agent_sandbox import SandboxClient
+        from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
+
+        client = SandboxClient(
+            connection_config=SandboxLocalTunnelConnectionConfig(),
+        )
+        handle = client.create_sandbox(template=TEMPLATE, namespace=NAMESPACE)
+        try:
+            backend = KubernetesSandbox(sandbox=handle, namespace=NAMESPACE)
+            assert backend._started
+            assert backend._owns_lifecycle is False
+
+            resp = backend.execute("echo 'ecosystem pattern'")
+            assert resp.exit_code == 0
+            assert "ecosystem pattern" in resp.output
+
+            backend.upload_files([("/tmp/eco-test.txt", b"eco content")])
+            results = backend.download_files(["/tmp/eco-test.txt"])
+            assert results[0].error is None
+            assert results[0].content == b"eco content"
+        finally:
+            client.delete_sandbox(handle.claim_name, NAMESPACE)
+
+    def test_create_kubernetes_sandbox_factory(self) -> None:
+        """create_kubernetes_sandbox() get-or-create factory works end-to-end."""
+        from k8s_agent_sandbox import SandboxClient
+        from k8s_agent_sandbox.models import SandboxLocalTunnelConnectionConfig
+
+        client = SandboxClient(
+            connection_config=SandboxLocalTunnelConnectionConfig(),
+        )
+        claim = "factory-test-claim"
+        try:
+            backend = create_kubernetes_sandbox(
+                client=client,
+                claim_name=claim,
+                template_name=TEMPLATE,
+                namespace=NAMESPACE,
+                labels={"test": "factory"},
+            )
+            assert backend._started
+            resp = backend.execute("echo 'from factory'")
+            assert resp.exit_code == 0
+            assert "from factory" in resp.output
+
+            # Calling again with the same claim_name should reuse
+            backend2 = create_kubernetes_sandbox(
+                client=client,
+                claim_name=claim,
+                template_name=TEMPLATE,
+                namespace=NAMESPACE,
+            )
+            resp2 = backend2.execute("echo 'reused'")
+            assert resp2.exit_code == 0
+            assert "reused" in resp2.output
+        finally:
+            client.delete_sandbox(claim, NAMESPACE)

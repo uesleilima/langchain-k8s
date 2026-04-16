@@ -33,16 +33,38 @@ def make_mock_client(
     claim_name: str = "test-claim-abc",
     run_result: FakeExecutionResult | None = None,
 ) -> MagicMock:
-    """Create a mock ``SandboxClient`` with sensible defaults."""
+    """Create a mock ``SandboxClient`` (factory) with a mock ``Sandbox`` handle."""
+    # Build the Sandbox handle mock
+    sandbox_handle = MagicMock()
+    sandbox_handle.claim_name = claim_name
+    sandbox_handle.sandbox_id = "test-sandbox-abc"
+    sandbox_handle.namespace = "test-ns"
+    sandbox_handle.is_active = True
+    sandbox_handle.commands.run = MagicMock(return_value=run_result or FakeExecutionResult())
+    sandbox_handle.files.read = MagicMock(return_value=b"file content")
+    sandbox_handle.files.write = MagicMock(return_value=None)
+    sandbox_handle.files.list = MagicMock(return_value=[])
+    sandbox_handle.files.exists = MagicMock(return_value=True)
+    sandbox_handle.terminate = MagicMock()
+    sandbox_handle._close_connection = MagicMock()
+
+    # Build the K8sHelper mock (used by create_kubernetes_sandbox factory)
+    k8s_helper = MagicMock()
+    k8s_helper.create_sandbox_claim = MagicMock()
+    k8s_helper.resolve_sandbox_name = MagicMock(return_value=f"sandbox-{claim_name}")
+    k8s_helper.wait_for_sandbox_ready = MagicMock()
+    k8s_helper.delete_sandbox_claim = MagicMock()
+
+    # Build the SandboxClient factory mock
     client = MagicMock()
-    client.claim_name = claim_name
-    client.sandbox_name = "test-sandbox-abc"
-    client.pod_name = "test-pod-abc"
-    client.__enter__ = MagicMock(return_value=client)
-    client.__exit__ = MagicMock(return_value=False)
-    client.run = MagicMock(return_value=run_result or FakeExecutionResult())
-    client.read = MagicMock(return_value=b"file content")
-    client.write = MagicMock(return_value=None)
+    client.create_sandbox = MagicMock(return_value=sandbox_handle)
+    client.get_sandbox = MagicMock(return_value=sandbox_handle)
+    client.delete_sandbox = MagicMock()
+    client.k8s_helper = k8s_helper
+
+    # Attach the sandbox handle for easy test access
+    client._mock_sandbox_handle = sandbox_handle
+
     return client
 
 
@@ -55,16 +77,9 @@ def mock_sandbox_client() -> MagicMock:
 @pytest.fixture()
 def sandbox(mock_sandbox_client: MagicMock) -> KubernetesSandbox:
     """Provide a ``KubernetesSandbox`` wired to a mock SDK client."""
-    with (
-        patch(
-            "langchain_k8s.sandbox._SandboxClient",
-            return_value=mock_sandbox_client,
-            create=True,
-        ),
-        patch(
-            "k8s_agent_sandbox.SandboxClient",
-            return_value=mock_sandbox_client,
-        ),
+    with patch(
+        "k8s_agent_sandbox.SandboxClient",
+        return_value=mock_sandbox_client,
     ):
         sb = KubernetesSandbox(
             template_name="test-template",

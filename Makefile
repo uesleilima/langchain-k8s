@@ -38,7 +38,8 @@ check: lint format-check typecheck ## Run all checks (lint + format + typecheck)
 test-unit: ## Run unit tests (no cluster required)
 	uv run pytest tests/unit/ -v --cov=src/langchain_k8s --cov-report=term-missing -m "not integration"
 
-test-integration: ## Run integration tests (requires Kind cluster — run 'make cluster-up' first)
+test-integration: ## Run integration tests
+	REUSE_CLUSTER=1 ./scripts/kind-setup.sh
 	uv run pytest tests/integration/ -v -m integration
 
 test: test-unit test-integration ## Run all tests (unit + integration)

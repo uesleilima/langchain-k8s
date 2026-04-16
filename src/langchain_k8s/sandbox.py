@@ -8,16 +8,18 @@ import posixpath
 import shlex
 import threading
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deepagents.backends.protocol import (
     EditResult,
     ExecuteResponse,
     FileDownloadResponse,
-    FileInfo,
     FileOperationError,
     FileUploadResponse,
-    GrepMatch,
+    GlobResult,
+    GrepResult,
+    LsResult,
+    ReadResult,
     WriteResult,
 )
 from deepagents.backends.sandbox import BaseSandbox
@@ -26,6 +28,7 @@ from langchain_k8s.proxy import patch_k8s_proxy_config
 
 if TYPE_CHECKING:
     from k8s_agent_sandbox import SandboxClient
+    from k8s_agent_sandbox.sandbox import Sandbox
 
 # Apply the NO_PROXY monkey-patch once at import time so that all
 # kubernetes client instances created in this process honour NO_PROXY.
@@ -35,33 +38,52 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_OUTPUT_SIZE = 1_048_576  # 1 MB
 _DEFAULT_COMMAND_TIMEOUT = 300  # 5 minutes
-_DEFAULT_ROOT_DIR = "/workspace"
+_DEFAULT_ROOT_DIR = "/tmp"
 
 
 class KubernetesSandbox(BaseSandbox):
     """LangChain sandbox backend for kubernetes-sigs/agent-sandbox.
 
-    Wraps the ``k8s-agent-sandbox`` Python SDK (``k8s_agent_sandbox.SandboxClient``)
-    to implement the ``BaseSandbox`` contract.  All standard filesystem tools
-    (``read``, ``write``, ``edit``, ``ls``, ``grep``, ``glob``) are provided by
+    Wraps the ``k8s-agent-sandbox`` Python SDK to implement the
+    ``BaseSandbox`` contract.  All standard filesystem tools (``read``,
+    ``write``, ``edit``, ``ls``, ``grep``, ``glob``) are provided by
     ``BaseSandbox`` via the ``execute()`` primitive.
 
-    Two lifecycle strategies are available via the ``reuse_sandbox`` flag:
+    Two constructor modes are supported:
 
-    * **Persistent** (``reuse_sandbox=True``, default) — one sandbox pod is
-      created lazily on the first ``execute()`` call and reused across all
-      subsequent calls.  Fast for cached, long-lived agents.
-    * **Ephemeral** (``reuse_sandbox=False``) — a fresh sandbox pod is created
-      for every ``start()`` / ``stop()`` cycle.  Maximum isolation between
-      invocations at the cost of cold-start latency.
+    Ecosystem-standard mode (recommended)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    Supports all three SDK connection modes:
+    Pass a pre-created ``k8s_agent_sandbox.Sandbox`` handle via the
+    ``sandbox`` parameter.  This follows the standard LangChain Deep
+    Agents sandbox backend pattern.  Lifecycle management (create /
+    delete) stays with the caller::
 
-    * **Production** — set ``gateway_name`` to discover a cluster Gateway IP.
-    * **Development** — omit ``gateway_name`` and ``api_url`` for automatic
-      ``kubectl port-forward`` (one tunnel per sandbox).
-    * **Advanced / Internal** — set ``api_url`` to connect to a pre-existing
-      port-forward or in-cluster router.
+        from k8s_agent_sandbox import SandboxClient
+        from langchain_k8s import KubernetesSandbox
+
+        client = SandboxClient(connection_config=...)
+        handle = client.create_sandbox(template="python-sandbox-template")
+        backend = KubernetesSandbox(sandbox=handle)
+
+        result = backend.execute("echo hello")
+        # ... use backend ...
+        client.delete_sandbox(handle.claim_name)
+
+    Config-based mode (convenience / backward-compatible)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    Pass ``template_name`` and connection parameters.  The sandbox is
+    created lazily on first use and destroyed on ``stop()``.  This mode
+    supports ``start()``/``stop()`` lifecycle methods::
+
+        backend = KubernetesSandbox(
+            template_name="python-sandbox-template",
+            namespace="agent-sandbox-system",
+        )
+        backend.start()
+        result = backend.execute("echo hello")
+        backend.stop()
 
     Path access policy
     ~~~~~~~~~~~~~~~~~~
@@ -84,14 +106,9 @@ class KubernetesSandbox(BaseSandbox):
     ~~~~~~~~~~~~~~~~~~
 
     When ``virtual_mode=True`` all file-operation paths are resolved under
-    ``root_dir`` (default ``/workspace``).  Path traversal (``..``, ``~``)
+    ``root_dir`` (default ``/tmp``).  Path traversal (``..``, ``~``)
     is rejected.  This provides containment semantics similar to
     ``FilesystemBackend(virtual_mode=True)``.
-
-    In virtual mode ``download_files()`` uses the native SDK HTTP transfer
-    (``SandboxClient.read()``) instead of base64-encoded shell commands.
-    Uploads continue to use shell commands because the SDK ``write()``
-    method only preserves the file basename.
 
     Enterprise deployment — horizontally scaled services
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -104,55 +121,34 @@ class KubernetesSandbox(BaseSandbox):
     * **Ingress / Gateway** — configure sticky sessions via annotations,
       for example ``nginx.ingress.kubernetes.io/affinity: "cookie"``.
 
-    To prevent sandbox destruction when a service instance restarts or scales
-    down, set ``skip_cleanup=True``::
+    Thread-scoped graph factory (production)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        backend = KubernetesSandbox(
-            template_name="python-sandbox-template",
-            namespace="agent-sandbox-system",
-            skip_cleanup=True,
-            sandbox_id="user-session-123",
-        )
+    Use ``create_kubernetes_sandbox()`` with a graph factory for
+    thread-scoped sandboxes::
 
-    The sandbox pod continues running after ``stop()`` and must be cleaned up
-    externally (e.g. Kubernetes TTL controller, CronJob, or manual deletion).
+        from k8s_agent_sandbox import SandboxClient
+        from langchain_k8s import create_kubernetes_sandbox
 
-    .. note::
+        client = SandboxClient(connection_config=...)
 
-       Full sandbox reconnection (multiple service instances sharing the same
-       Kubernetes pod) requires upstream SDK support for deterministic claim
-       names.  Currently each ``start()`` call creates a **new** SandboxClaim.
-
-    Example — persistent sandbox with context manager::
-
-        from langchain_k8s import KubernetesSandbox
-
-        with KubernetesSandbox(
-            template_name="python-sandbox-template",
-            namespace="agent-sandbox-system",
-        ) as backend:
-            agent = create_deep_agent(model=model, backend=backend, ...)
-            result = agent.invoke({"messages": [...]})
-            # ... more invocations reuse the same pod ...
-
-    Example — ephemeral sandbox with explicit lifecycle::
-
-        backend = KubernetesSandbox(
-            template_name="python-sandbox-template",
-            namespace="agent-sandbox-system",
-            reuse_sandbox=False,
-        )
-        backend.start()
-        try:
-            result = backend.execute("echo hello")
-        finally:
-            backend.stop()
+        async def agent(config: RunnableConfig):
+            thread_id = config["configurable"]["thread_id"]
+            backend = create_kubernetes_sandbox(
+                client=client,
+                claim_name=f"sandbox-{thread_id}",
+                template_name="python-sandbox-template",
+                namespace="agent-sandbox-system",
+                labels={"thread_id": thread_id},
+            )
+            return create_deep_agent(model=..., backend=backend)
     """
 
     def __init__(
         self,
         *,
-        template_name: str,
+        sandbox: Sandbox | None = None,
+        template_name: str | None = None,
         namespace: str = "default",
         gateway_name: str | None = None,
         gateway_namespace: str = "default",
@@ -164,13 +160,24 @@ class KubernetesSandbox(BaseSandbox):
         allow_prefixes: list[str] | None = None,
         root_dir: str | None = None,
         virtual_mode: bool = False,
-        sandbox_id: str | None = None,
         skip_cleanup: bool = False,
+        claim_name: str | None = None,
+        labels: dict[str, str] | None = None,
     ) -> None:
-        """Initialise the backend.  No sandbox is created until first use.
+        """Initialise the backend.
+
+        Either ``sandbox`` (ecosystem-standard) or ``template_name``
+        (config-based) must be provided, but not both ``sandbox`` and
+        ``claim_name`` simultaneously.
 
         Args:
+            sandbox: Pre-created ``k8s_agent_sandbox.Sandbox`` handle.
+                When provided, the backend wraps this handle directly
+                and lifecycle management is the caller's responsibility.
+                This is the standard pattern used by all LangChain Deep
+                Agents sandbox backends.
             template_name: Name of the ``SandboxTemplate`` CRD to use.
+                Required when ``sandbox`` is not provided.
             namespace: Kubernetes namespace for the sandbox resources.
             gateway_name: Gateway resource name (production mode).
             gateway_namespace: Kubernetes namespace of the Gateway resource.
@@ -179,31 +186,65 @@ class KubernetesSandbox(BaseSandbox):
             reuse_sandbox: If ``True`` (default) one sandbox is reused across
                 calls.  If ``False`` a new sandbox is created on each
                 ``start()`` and destroyed on ``stop()``.
+                Only used in config-based mode.
             max_output_size: Truncate ``execute()`` output beyond this many
                 bytes.
             command_timeout: Default timeout in seconds for ``run()`` calls.
+                Can be overridden per-call via the ``timeout`` parameter
+                on ``execute()``.
             allow_prefixes: List of path prefixes where ``write()`` and
                 ``edit()`` operations are allowed.  ``None`` (default) means
                 no restrictions.  When set, only paths starting with one of
                 these prefixes are writable; all others return an error.
                 The check runs against the **resolved** path (after virtual
                 mode resolution, if enabled).
+
+                .. important::
+                   This is a **tool-level policy** enforced by the sandbox
+                   backend *before* the command reaches the container.  It
+                   does **not** grant filesystem permissions inside the
+                   container.  The target directories must also be writable
+                   by the container's OS user (see ``root_dir`` note below).
+
             root_dir: Root directory for virtual filesystem mode.  Only
                 meaningful when ``virtual_mode=True``.  Defaults to
-                ``"/workspace"``.
+                ``"/tmp"``, which is always writable inside the container.
+
+                .. important::
+                   ``root_dir`` must point to a directory that the
+                   **container process can write to**.  ``/tmp`` (the
+                   default) is always writable.  Other common options are
+                   ``/home/<user>`` or a volume-mounted path.  Custom
+                   directories like ``/workspace`` require an explicit
+                   writable volume mount in the ``SandboxTemplate`` pod
+                   spec.  When ``write()`` or ``edit()`` fails with
+                   ``PermissionError`` despite ``allow_prefixes`` allowing
+                   the path, the container's filesystem permissions are the
+                   likely cause.
+
             virtual_mode: When ``True``, all file-operation paths are resolved
                 under ``root_dir``.  Path traversal (``..``, ``~``) is
-                blocked.  ``download_files()`` uses the native SDK HTTP
-                transfer instead of base64-encoded shell commands.
-            sandbox_id: Optional stable identifier for this sandbox instance.
-                When set, the ``id`` property returns this value instead of the
-                Kubernetes claim name or auto-generated UUID.  Useful for
-                logging and correlation in multi-instance deployments.
+                blocked.
             skip_cleanup: When ``True``, ``stop()`` releases local resources
                 (port-forward, tracing) but does **not** delete the Kubernetes
                 ``SandboxClaim``.  The sandbox pod continues running and must
-                be cleaned up externally.
+                be cleaned up externally.  Only used in config-based mode.
+            claim_name: Kubernetes ``SandboxClaim`` name of an existing
+                sandbox to reconnect to instead of creating a new one.
+                When set, ``start()`` calls ``SandboxClient.get_sandbox()``
+                to re-attach.  Cannot be combined with ``sandbox``.
+            labels: Kubernetes labels applied to the ``SandboxClaim`` at
+                creation time.  Ignored when ``claim_name`` is set
+                (reconnecting to an existing sandbox).  Useful for
+                identifying sandboxes by session, user, or environment.
         """
+        if sandbox is not None and claim_name is not None:
+            msg = "Cannot specify both 'sandbox' and 'claim_name'"
+            raise ValueError(msg)
+        if sandbox is None and template_name is None and claim_name is None:
+            msg = "Either 'sandbox' or 'template_name' must be provided"
+            raise ValueError(msg)
+
         self._template_name = template_name
         self._namespace = namespace
         self._gateway_name = gateway_name
@@ -214,8 +255,10 @@ class KubernetesSandbox(BaseSandbox):
         self._max_output_size = max_output_size
         self._command_timeout = command_timeout
         self._virtual_mode = virtual_mode
-        self._sandbox_id = sandbox_id
         self._skip_cleanup = skip_cleanup
+        self._claim_name = claim_name
+        self._labels = labels
+        self._owns_lifecycle = sandbox is None
 
         if allow_prefixes is not None:
             self._allow_prefixes: tuple[str, ...] | None = tuple(
@@ -230,22 +273,33 @@ class KubernetesSandbox(BaseSandbox):
             self._root_dir = root_dir
 
         self._client: SandboxClient | None = None
-        self._id: str = str(uuid.uuid4())
         self._lock = threading.Lock()
-        self._started = False
+
+        if sandbox is not None:
+            self._sandbox: Sandbox | None = sandbox
+            self._id: str = str(sandbox.claim_name) if sandbox.claim_name else str(uuid.uuid4())
+            self._started = True
+        else:
+            self._sandbox = None
+            self._id = str(uuid.uuid4())
+            self._started = False
 
         logger.debug(
             "KubernetesSandbox created: id=%s template=%s namespace=%s reuse=%s mode=%s"
-            " allow_prefixes=%s root_dir=%s virtual_mode=%s skip_cleanup=%s",
+            " allow_prefixes=%s root_dir=%s virtual_mode=%s skip_cleanup=%s"
+            " claim_name=%s labels=%s owns_lifecycle=%s",
             self._id,
             self._template_name,
             self._namespace,
             self._reuse_sandbox,
-            "gateway" if gateway_name else ("api_url" if api_url else "tunnel"),
+            "handle" if sandbox is not None else ("gateway" if gateway_name else ("api_url" if api_url else "tunnel")),
             self._allow_prefixes,
             self._root_dir,
             self._virtual_mode,
             self._skip_cleanup,
+            self._claim_name,
+            self._labels,
+            self._owns_lifecycle,
         )
 
     # -- BaseSandbox abstract property -----------------------------------------
@@ -254,15 +308,24 @@ class KubernetesSandbox(BaseSandbox):
     def id(self) -> str:  # noqa: A003
         """Unique identifier for this sandbox backend instance.
 
-        Returns ``sandbox_id`` if set, otherwise the Kubernetes sandbox claim
-        name if a sandbox is running, otherwise a stable UUID generated at
-        construction time.
+        Returns the Kubernetes sandbox claim name if a sandbox is running,
+        otherwise a stable UUID generated at construction time.
         """
-        if self._sandbox_id is not None:
-            return self._sandbox_id
-        if self._client is not None and self._client.claim_name is not None:
-            return str(self._client.claim_name)
+        if self._sandbox is not None and self._sandbox.claim_name is not None:
+            return str(self._sandbox.claim_name)
         return self._id
+
+    @property
+    def claim_name(self) -> str | None:
+        """Kubernetes ``SandboxClaim`` name of the running sandbox.
+
+        Returns ``None`` before ``start()`` is called (unless a
+        ``claim_name`` was passed to the constructor for reconnection).
+        Persist this value to reconnect after a process restart.
+        """
+        if self._sandbox is not None and self._sandbox.claim_name is not None:
+            return str(self._sandbox.claim_name)
+        return self._claim_name
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -288,21 +351,28 @@ class KubernetesSandbox(BaseSandbox):
 
     # -- BaseSandbox abstract methods ------------------------------------------
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a shell command inside the sandbox.
 
         The sandbox is created lazily on the first call.  In persistent mode
         (``reuse_sandbox=True``) a connection error triggers one automatic
         reconnect attempt.
+
+        Args:
+            command: Full shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command to
+                complete.  If ``None``, uses the backend's default
+                ``command_timeout``.
         """
-        logger.debug("execute: sandbox=%s command=%r", self.id, command)
+        effective_timeout = timeout if timeout is not None else self._command_timeout
+        logger.debug("execute: sandbox=%s command=%r timeout=%s", self.id, command, effective_timeout)
         self._ensure_sandbox()
-        assert self._client is not None  # ensured by _ensure_sandbox
+        assert self._sandbox is not None  # ensured by _ensure_sandbox
 
         try:
-            resp = self._run(command)
+            resp = self._run(command, timeout=effective_timeout)
         except Exception as exc:
-            if self._reuse_sandbox:
+            if self._reuse_sandbox and self._owns_lifecycle:
                 logger.warning(
                     "execute: sandbox=%s connection lost (%s) — reconnecting",
                     self.id,
@@ -310,11 +380,11 @@ class KubernetesSandbox(BaseSandbox):
                 )
                 self._destroy_sandbox()
                 self._ensure_sandbox()
-                assert self._client is not None
-                resp = self._run(command)
+                assert self._sandbox is not None
+                resp = self._run(command, timeout=effective_timeout)
             else:
                 logger.debug(
-                    "execute: sandbox=%s command failed (reuse_sandbox=False, not retrying): %s",
+                    "execute: sandbox=%s command failed (not retrying): %s",
                     self.id,
                     exc,
                 )
@@ -344,7 +414,18 @@ class KubernetesSandbox(BaseSandbox):
         if allow_error is not None:
             logger.debug("write: denied path=%r reason=%s", file_path, allow_error)
             return WriteResult(error=allow_error)
-        return super().write(resolved, content)
+        result = super().write(resolved, content)
+        if result.error and "PermissionError" in result.error:
+            logger.warning(
+                "write: container permission denied for path=%r (resolved=%r). "
+                "The sandbox policy (allow_prefixes) permits this path, but the "
+                "container's OS user cannot write to it. Ensure the target "
+                "directory is writable in the SandboxTemplate pod spec "
+                "(e.g. use a writable volume mount or a directory like /tmp).",
+                file_path,
+                resolved,
+            )
+        return result
 
     def edit(
         self,
@@ -365,47 +446,58 @@ class KubernetesSandbox(BaseSandbox):
         if allow_error is not None:
             logger.debug("edit: denied path=%r reason=%s", file_path, allow_error)
             return EditResult(error=allow_error)
-        return super().edit(resolved, old_string, new_string, replace_all)
+        result = super().edit(resolved, old_string, new_string, replace_all)
+        if result.error and "PermissionError" in result.error:
+            logger.warning(
+                "edit: container permission denied for path=%r (resolved=%r). "
+                "The sandbox policy (allow_prefixes) permits this path, but the "
+                "container's OS user cannot write to it. Ensure the target "
+                "directory is writable in the SandboxTemplate pod spec "
+                "(e.g. use a writable volume mount or a directory like /tmp).",
+                file_path,
+                resolved,
+            )
+        return result
 
-    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> str:
+    def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
         """Read file content with virtual-mode path resolution."""
         try:
             resolved = self._resolve_virtual_path(file_path)
         except ValueError as exc:
-            return f"Error: {exc}"
+            return ReadResult(error=str(exc))
         return super().read(resolved, offset, limit)
 
-    def ls_info(self, path: str) -> list[FileInfo]:
+    def ls(self, path: str) -> LsResult:
         """List directory contents with virtual-mode path resolution."""
         try:
             resolved = self._resolve_virtual_path(path)
-        except ValueError:
-            return []
-        return super().ls_info(resolved)
+        except ValueError as exc:
+            return LsResult(error=str(exc))
+        return super().ls(resolved)
 
-    def glob_info(self, pattern: str, path: str = "/") -> list[FileInfo]:
+    def glob(self, pattern: str, path: str = "/") -> GlobResult:
         """Glob file matching with virtual-mode path resolution."""
         try:
             resolved = self._resolve_virtual_path(path)
-        except ValueError:
-            return []
-        return super().glob_info(pattern, resolved)
+        except ValueError as exc:
+            return GlobResult(error=str(exc))
+        return super().glob(pattern, resolved)
 
-    def grep_raw(
+    def grep(
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
-    ) -> list[GrepMatch] | str:
+    ) -> GrepResult:
         """Search file content with virtual-mode path resolution."""
         if path is not None:
             try:
                 path = self._resolve_virtual_path(path)
             except ValueError as exc:
-                return str(exc)
+                return GrepResult(error=str(exc))
         elif self._virtual_mode and self._root_dir is not None:
             path = self._root_dir
-        return super().grep_raw(pattern, path, glob)
+        return super().grep(pattern, path, glob)
 
     # -- File transfer ---------------------------------------------------------
 
@@ -425,7 +517,7 @@ class KubernetesSandbox(BaseSandbox):
             len(files),
         )
         self._ensure_sandbox()
-        assert self._client is not None
+        assert self._sandbox is not None
 
         results: list[FileUploadResponse] = []
         for path, content in files:
@@ -473,7 +565,7 @@ class KubernetesSandbox(BaseSandbox):
         """Download files from the sandbox via base64-encoded shell commands.
 
         Shell-based downloads are used unconditionally because the
-        ``k8s-agent-sandbox`` v0.2.1 runtime restricts its native
+        ``k8s-agent-sandbox`` runtime restricts its native
         ``/download`` endpoint to the ``/app`` directory, making it
         incompatible with arbitrary absolute paths.
         """
@@ -490,7 +582,7 @@ class KubernetesSandbox(BaseSandbox):
             len(paths),
         )
         self._ensure_sandbox()
-        assert self._client is not None
+        assert self._sandbox is not None
 
         results: list[FileDownloadResponse] = []
         for path in paths:
@@ -541,7 +633,7 @@ class KubernetesSandbox(BaseSandbox):
             len(paths),
         )
         self._ensure_sandbox()
-        assert self._client is not None
+        assert self._sandbox is not None
 
         results: list[FileDownloadResponse] = []
         for path in paths:
@@ -556,7 +648,8 @@ class KubernetesSandbox(BaseSandbox):
                 results.append(FileDownloadResponse(path=path, content=None, error=error))
                 continue
             try:
-                content = self._client.read(resolved)
+                assert self._sandbox is not None
+                content = self._sandbox.files.read(resolved)
                 logger.debug(
                     "download_files: sandbox=%s path=%s size=%d OK (native)",
                     self.id,
@@ -591,6 +684,10 @@ class KubernetesSandbox(BaseSandbox):
         When ``virtual_mode`` is disabled the path is returned unchanged.
         When enabled, path traversal (``..``, ``~``) is rejected and the
         path is anchored under ``root_dir``.
+
+        The method is idempotent: if *path* already starts with ``root_dir``
+        it is validated but not re-prefixed.  This avoids double-resolution
+        when ``super().write()`` internally calls ``self.upload_files()``.
         """
         if not self._virtual_mode or self._root_dir is None:
             return path
@@ -599,18 +696,27 @@ class KubernetesSandbox(BaseSandbox):
             msg = f"Path traversal not allowed: {path!r}"
             raise ValueError(msg)
 
+        root_normalized = posixpath.normpath(self._root_dir)
+
+        # Already resolved — validate but don't re-prefix.
+        if path.startswith(root_normalized + "/") or path == root_normalized:
+            normalized = posixpath.normpath(path)
+            if not normalized.startswith(root_normalized + "/") and normalized != root_normalized:
+                msg = f"Path {path!r} resolves outside root directory {self._root_dir!r}"
+                raise ValueError(msg)
+            return normalized
+
         vpath = path if path.startswith("/") else "/" + path
         resolved = self._root_dir.rstrip("/") + vpath
 
         normalized = posixpath.normpath(resolved)
-        root_normalized = posixpath.normpath(self._root_dir)
         if not normalized.startswith(root_normalized + "/") and normalized != root_normalized:
             msg = f"Path {path!r} resolves outside root directory {self._root_dir!r}"
             raise ValueError(msg)
 
         return normalized
 
-    def _run(self, command: str) -> ExecuteResponse:
+    def _run(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a user command wrapped in ``sh -c`` and map to ``ExecuteResponse``.
 
         The sandbox runtime's ``/execute`` endpoint runs commands directly
@@ -618,15 +724,16 @@ class KubernetesSandbox(BaseSandbox):
         (``&&``) would be interpreted literally.  Wrapping in ``sh -c``
         ensures full POSIX shell semantics.
         """
-        resp = self._run_raw(command)
+        resp = self._run_raw(command, timeout=timeout)
         return resp
 
-    def _run_raw(self, command: str) -> ExecuteResponse:
+    def _run_raw(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Low-level execute via SDK: wraps in ``sh -c`` and maps result."""
-        assert self._client is not None
+        assert self._sandbox is not None
+        effective_timeout = timeout if timeout is not None else self._command_timeout
         shell_cmd = f"sh -c {shlex.quote(command)}"
         logger.debug("_run_raw: sandbox=%s shell_cmd=%r", self.id, shell_cmd)
-        result = self._client.run(shell_cmd, timeout=self._command_timeout)
+        result = self._sandbox.commands.run(shell_cmd, timeout=effective_timeout)
 
         parts: list[str] = []
         if result.stdout:
@@ -652,69 +759,246 @@ class KubernetesSandbox(BaseSandbox):
         )
 
     def _ensure_sandbox(self) -> None:
-        """Create the sandbox if not already running.  Thread-safe."""
+        """Create or reconnect the sandbox.  Thread-safe.
+
+        When ``claim_name`` was provided at construction time the SDK
+        ``get_sandbox()`` method is used to re-attach to an existing
+        SandboxClaim instead of creating a new one.
+        """
         if self._started:
             return
         with self._lock:
             if self._started:
                 return
             self._client = self._create_client()
-            self._client.__enter__()
+            if self._claim_name is not None:
+                self._sandbox = self._client.get_sandbox(
+                    claim_name=self._claim_name,
+                    namespace=self._namespace,
+                )
+                logger.info("Sandbox reconnected: %s (claim=%s)", self.id, self._claim_name)
+            else:
+                assert self._template_name is not None  # validated in __init__
+                self._sandbox = self._client.create_sandbox(
+                    template=self._template_name,
+                    namespace=self._namespace,
+                    labels=self._labels,
+                )
+                logger.info("Sandbox started: %s", self.id)
             self._started = True
-            logger.info("Sandbox started: %s", self.id)
 
     def _destroy_sandbox(self) -> None:
         """Destroy the current sandbox.  Thread-safe and idempotent.
 
-        When ``skip_cleanup=True`` the Kubernetes ``SandboxClaim`` is
-        preserved so the sandbox pod keeps running.  Local resources
-        (port-forward, tracing) are still released.
+        In handle mode (``sandbox`` was passed to the constructor) only the
+        local connection is closed — the caller owns the Kubernetes
+        resource lifecycle.
+
+        In config-based mode, when ``skip_cleanup=True`` the Kubernetes
+        ``SandboxClaim`` is preserved so the sandbox pod keeps running.
+        Local resources (port-forward, tracing) are still released.
         """
         with self._lock:
             if not self._started:
                 return
-            if self._client is not None:
+
+            if self._sandbox is not None and not self._owns_lifecycle:
+                # Handle mode: only close the local connection.
+                saved_claim = self._sandbox.claim_name
+                try:
+                    self._sandbox._close_connection()
+                except Exception as exc:
+                    logger.warning("Error during sandbox disconnect: %s", exc)
+                logger.info(
+                    "Sandbox disconnected (handle mode, SandboxClaim %s preserved)",
+                    saved_claim,
+                )
+                self._sandbox = None
+            elif self._sandbox is not None and self._client is not None:
                 if self._skip_cleanup:
-                    # Temporarily clear claim_name so the SDK's __exit__
-                    # skips CRD deletion while still cleaning up local
-                    # resources (port-forward, tracing).
-                    saved_claim = self._client.claim_name
-                    self._client.claim_name = None
+                    saved_claim = self._sandbox.claim_name
                     try:
-                        self._client.__exit__(None, None, None)
+                        self._sandbox._close_connection()
                     except Exception as exc:
                         logger.warning("Error during sandbox disconnect: %s", exc)
-                    finally:
-                        self._client.claim_name = saved_claim
                     logger.info(
                         "Sandbox disconnected (skip_cleanup=True, SandboxClaim %s preserved)",
                         saved_claim,
                     )
                 else:
                     try:
-                        self._client.__exit__(None, None, None)
+                        self._client.delete_sandbox(
+                            self._sandbox.claim_name,
+                            self._namespace,
+                        )
                     except Exception as exc:
                         logger.warning("Error during sandbox cleanup: %s", exc)
                     logger.info("Sandbox stopped")
+                self._sandbox = None
                 self._client = None
             self._started = False
 
     def _create_client(self) -> SandboxClient:
         """Build a new ``SandboxClient`` from stored configuration."""
         from k8s_agent_sandbox import SandboxClient as _SandboxClient
+        from k8s_agent_sandbox.models import (
+            SandboxDirectConnectionConfig,
+            SandboxGatewayConnectionConfig,
+            SandboxLocalTunnelConnectionConfig,
+        )
 
-        kwargs: dict[str, object] = {
-            "template_name": self._template_name,
-            "namespace": self._namespace,
-            "server_port": self._server_port,
-        }
-        if self._gateway_name is not None:
-            kwargs["gateway_name"] = self._gateway_name
-            kwargs["gateway_namespace"] = self._gateway_namespace
         if self._api_url is not None:
-            kwargs["api_url"] = self._api_url
-        logger.debug("_create_client: kwargs=%s", kwargs)
-        return _SandboxClient(**kwargs)
+            connection_config = SandboxDirectConnectionConfig(
+                api_url=self._api_url,
+                server_port=self._server_port,
+            )
+        elif self._gateway_name is not None:
+            connection_config = SandboxGatewayConnectionConfig(
+                gateway_name=self._gateway_name,
+                gateway_namespace=self._gateway_namespace,
+                server_port=self._server_port,
+            )
+        else:
+            connection_config = SandboxLocalTunnelConnectionConfig(
+                server_port=self._server_port,
+            )
+
+        logger.debug("_create_client: connection_config=%s", connection_config)
+        return _SandboxClient(connection_config=connection_config)
+
+
+def create_kubernetes_sandbox(
+    *,
+    client: SandboxClient,
+    claim_name: str,
+    template_name: str,
+    namespace: str = "default",
+    labels: dict[str, str] | None = None,
+    sandbox_ready_timeout: int = 180,
+    **kwargs: Any,
+) -> KubernetesSandbox:
+    """Get-or-create a :class:`KubernetesSandbox` by ``claim_name``.
+
+    Encapsulates the get-or-create pattern recommended by the LangChain
+    Deep Agents production guide.  If a sandbox with the given
+    ``claim_name`` already exists it is reused; otherwise a new one is
+    created from ``template_name``.
+
+    The ``claim_name`` is used as the Kubernetes ``SandboxClaim`` resource
+    name, making lookups deterministic.  This is necessary because the
+    SDK's ``create_sandbox()`` auto-generates claim names, which would
+    break the get-or-create pattern.
+
+    The returned backend wraps the sandbox handle directly (ecosystem-
+    standard mode).  Lifecycle management stays with the caller — call
+    ``client.delete_sandbox(claim_name, namespace)`` when done.
+
+    Usage in a thread-scoped graph factory::
+
+        from k8s_agent_sandbox import SandboxClient
+        from langchain_k8s import create_kubernetes_sandbox
+
+        client = SandboxClient(connection_config=...)
+
+        async def agent(config: RunnableConfig):
+            thread_id = config["configurable"]["thread_id"]
+            backend = create_kubernetes_sandbox(
+                client=client,
+                claim_name=f"sandbox-{thread_id}",
+                template_name="python-sandbox-template",
+                namespace="agent-sandbox-system",
+                labels={"thread_id": thread_id},
+            )
+            return create_deep_agent(model=..., backend=backend)
+
+    Args:
+        client: A ``SandboxClient`` instance for managing Kubernetes
+            sandbox resources.
+        claim_name: Kubernetes ``SandboxClaim`` resource name to look up
+            or create.  Must be a valid DNS subdomain name.
+        template_name: ``SandboxTemplate`` CRD name used when creating a
+            new sandbox.
+        namespace: Kubernetes namespace for the sandbox resources.
+        labels: Labels applied to the ``SandboxClaim`` at creation time.
+        sandbox_ready_timeout: Maximum seconds to wait for a newly created
+            sandbox to become ready.  Defaults to 180.
+        **kwargs: Additional keyword arguments forwarded to the
+            :class:`KubernetesSandbox` constructor (e.g.
+            ``allow_prefixes``, ``virtual_mode``, ``root_dir``).
+
+    Returns:
+        A ``KubernetesSandbox`` wrapping the sandbox handle.
+    """
+    from k8s_agent_sandbox.exceptions import SandboxNotFoundError as _SandboxNotFoundError
+    from kubernetes import client as _k8s_client
+
+    # Fast check: does the SandboxClaim resource exist?  A direct GET
+    # returns immediately (~20 ms) instead of the 30 s watch timeout
+    # that client.get_sandbox() uses internally via resolve_sandbox_name.
+    _claim_exists = True
+    try:
+        client.k8s_helper.custom_objects_api.get_namespaced_custom_object(
+            group="extensions.agents.x-k8s.io",
+            version="v1alpha1",
+            namespace=namespace,
+            plural="sandboxclaims",
+            name=claim_name,
+        )
+    except _k8s_client.ApiException as _exc:
+        if _exc.status == 404:
+            _claim_exists = False
+        else:
+            raise
+
+    if _claim_exists:
+        try:
+            sandbox_handle = client.get_sandbox(claim_name=claim_name, namespace=namespace)
+        except _SandboxNotFoundError:
+            _claim_exists = False
+
+    if not _claim_exists:
+        # Create a SandboxClaim with the user-specified name so it can
+        # be found by claim_name on subsequent calls.  The SDK's
+        # create_sandbox() auto-generates claim names, so we create the
+        # claim resource directly.
+        #
+        # Handle 409 Conflict for concurrent callers: if another process
+        # created the claim between our GET and this POST, fall back to
+        # attaching to the existing claim.
+        _we_created = False
+        try:
+            client.k8s_helper.create_sandbox_claim(
+                claim_name,
+                template_name,
+                namespace,
+                labels=labels,
+            )
+            _we_created = True
+        except _k8s_client.ApiException as _exc:
+            if _exc.status != 409:
+                raise
+
+        if _we_created:
+            try:
+                sandbox_id = client.k8s_helper.resolve_sandbox_name(
+                    claim_name,
+                    namespace,
+                    timeout=sandbox_ready_timeout,
+                )
+                client.k8s_helper.wait_for_sandbox_ready(
+                    sandbox_id,
+                    namespace,
+                    timeout=sandbox_ready_timeout,
+                )
+            except Exception:
+                client.k8s_helper.delete_sandbox_claim(claim_name, namespace)
+                raise
+
+        sandbox_handle = client.get_sandbox(
+            claim_name=claim_name,
+            namespace=namespace,
+        )
+    return KubernetesSandbox(sandbox=sandbox_handle, namespace=namespace, **kwargs)
 
 
 def _validate_path(path: str) -> FileOperationError | None:
@@ -733,5 +1017,4 @@ def _classify_error(output: str) -> FileOperationError:
         return "is_directory"
     if "no such file or directory" in lower:
         return "file_not_found"
-    # Default — could be a missing parent directory or other path issue.
     return "file_not_found"

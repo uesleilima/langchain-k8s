@@ -1,6 +1,6 @@
 [project]
 name = "langchain-k8s"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Kubernetes Agent Sandbox integration for LangChain Deep Agents"
 readme = "README.md"
 license = "MIT"
@@ -18,8 +18,8 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "deepagents>=0.4.0",
-    "k8s-agent-sandbox>=0.2.1",
+    "deepagents>=0.5.3",
+    "k8s-agent-sandbox>=0.3.10",
 ]
 
 [project.urls]
@@ -30,6 +30,9 @@ Issues = "https://github.com/uesleilima/langchain-k8s/issues"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/langchain_k8s/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/langchain_k8s"]

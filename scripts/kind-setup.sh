@@ -4,8 +4,9 @@
 # components needed to run langchain-k8s integration tests.
 #
 # Usage:
-#   ./scripts/kind-setup.sh            # full setup
-#   SKIP_CLUSTER=1 ./scripts/kind-setup.sh  # reuse existing cluster
+#   ./scripts/kind-setup.sh                        # full setup
+#   SKIP_CLUSTER=1 ./scripts/kind-setup.sh         # skip cluster creation entirely
+#   REUSE_CLUSTER=1 ./scripts/kind-setup.sh        # reuse cluster if it exists
 #
 # Prerequisites:
 #   - kind   (https://kind.sigs.k8s.io/)
@@ -19,7 +20,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-langchain-k8s}"
 NAMESPACE="agent-sandbox-system"
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.2.1}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.3.10}"
 
 # Colours for output
 GREEN='\033[0;32m'
@@ -44,6 +45,8 @@ done
 
 if [[ "${SKIP_CLUSTER:-}" == "1" ]]; then
     info "Skipping cluster creation (SKIP_CLUSTER=1)"
+elif [[ "${REUSE_CLUSTER:-}" == "1" ]] && kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
+    info "Kind cluster '${CLUSTER_NAME}' already exists — reusing (REUSE_CLUSTER=1)"
 else
     if kind get clusters 2>/dev/null | grep -q "^${CLUSTER_NAME}$"; then
         warn "Kind cluster '${CLUSTER_NAME}' already exists — deleting"

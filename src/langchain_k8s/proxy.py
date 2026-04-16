@@ -23,8 +23,9 @@ Upstream tracking:
     Fix:  https://github.com/kubernetes-client/python/pull/2513
           https://github.com/kubernetes-client/python/pull/2459
     Affected versions: >=34.1.0 (including 35.0.0).
-    Status: Open (as of 2026-02-17).
-    Once the fix is merged and released, this workaround can be removed.
+    Status: Fixed on master (Feb 2026, PRs #2459 + #2513), but NOT yet
+            in any released version. Latest release v35.0.0 is still affected.
+    Once a fixed version is released, this workaround can be removed.
 """
 
 from __future__ import annotations
