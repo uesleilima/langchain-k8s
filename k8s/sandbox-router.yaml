@@ -31,6 +31,7 @@ spec:
       labels:
         app: sandbox-router
     spec:
+      automountServiceAccountToken: false
       containers:
         - name: router
           image: us-central1-docker.pkg.dev/k8s-staging-images/agent-sandbox/sandbox-router:latest-main
@@ -53,6 +54,7 @@ spec:
             requests:
               cpu: 100m
               memory: 128Mi
+              ephemeral-storage: 64Mi
             limits:
               cpu: 500m
               memory: 256Mi

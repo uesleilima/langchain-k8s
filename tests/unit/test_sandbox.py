@@ -85,7 +85,9 @@ class TestId:
 
     def test_id_stable_before_start(self) -> None:
         sb, _, _ = _make_sandbox()
-        assert sb.id == sb.id  # same value both times
+        first = sb.id
+        second = sb.id
+        assert first == second  # same value both times
 
 
 # ---------------------------------------------------------------------------
