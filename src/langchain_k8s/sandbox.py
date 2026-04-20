@@ -310,6 +310,11 @@ class KubernetesSandbox(BaseSandbox):
 
         Returns the Kubernetes sandbox claim name if a sandbox is running,
         otherwise a stable UUID generated at construction time.
+
+        Returns:
+            A string identifier.  After ``start()`` this is the
+            ``SandboxClaim`` name; before ``start()`` it is an
+            auto-generated UUID.
         """
         if self._sandbox is not None and self._sandbox.claim_name is not None:
             return str(self._sandbox.claim_name)
@@ -322,6 +327,11 @@ class KubernetesSandbox(BaseSandbox):
         Returns ``None`` before ``start()`` is called (unless a
         ``claim_name`` was passed to the constructor for reconnection).
         Persist this value to reconnect after a process restart.
+
+        Returns:
+            The claim name string, or ``None`` if no sandbox has been
+            created yet and no ``claim_name`` was provided at
+            construction time.
         """
         if self._sandbox is not None and self._sandbox.claim_name is not None:
             return str(self._sandbox.claim_name)
@@ -330,11 +340,36 @@ class KubernetesSandbox(BaseSandbox):
     # -- Lifecycle -------------------------------------------------------------
 
     def start(self) -> None:
-        """Eagerly create the sandbox.  Idempotent if already started."""
+        """Eagerly create (or reconnect to) the sandbox pod.
+
+        In config-based mode this creates the Kubernetes ``SandboxClaim``
+        and waits for the sandbox pod to become ready.  When
+        ``claim_name`` was provided, it reconnects to an existing pod
+        instead.
+
+        The call is idempotent: calling ``start()`` on an already-started
+        backend is a no-op.
+
+        Raises:
+            k8s_agent_sandbox.exceptions.SandboxNotFoundError:
+                If ``claim_name`` was specified but no matching
+                ``SandboxClaim`` exists in the cluster.
+            kubernetes.client.ApiException:
+                On Kubernetes API errors (e.g. RBAC, namespace not found).
+        """
         self._ensure_sandbox()
 
     def stop(self) -> None:
-        """Destroy the current sandbox and release resources."""
+        """Destroy the current sandbox and release local resources.
+
+        In config-based mode the Kubernetes ``SandboxClaim`` is deleted
+        (unless ``skip_cleanup=True``).  In handle mode only the local
+        connection is closed — the caller owns the Kubernetes resource
+        lifecycle.
+
+        The call is idempotent: calling ``stop()`` on an already-stopped
+        backend is a no-op.
+        """
         self._destroy_sandbox()
 
     def __enter__(self) -> KubernetesSandbox:
@@ -354,15 +389,29 @@ class KubernetesSandbox(BaseSandbox):
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         """Execute a shell command inside the sandbox.
 
-        The sandbox is created lazily on the first call.  In persistent mode
+        The command is wrapped in ``sh -c '...'`` so full POSIX shell
+        semantics (pipes, redirects, ``&&``) work as expected.  The
+        sandbox is created lazily on the first call.  In persistent mode
         (``reuse_sandbox=True``) a connection error triggers one automatic
-        reconnect attempt.
+        reconnect attempt before the exception propagates.
 
         Args:
-            command: Full shell command string to execute.
+            command: Full shell command string to execute.  May contain
+                pipes, redirects, and chaining operators.
             timeout: Maximum time in seconds to wait for the command to
                 complete.  If ``None``, uses the backend's default
                 ``command_timeout``.
+
+        Returns:
+            An :class:`~deepagents.backends.protocol.ExecuteResponse`
+            containing ``output`` (combined stdout + stderr),
+            ``exit_code``, and a ``truncated`` flag indicating whether
+            the output was clipped to ``max_output_size``.
+
+        Raises:
+            Exception: Propagated from the underlying SDK if the command
+                cannot be dispatched (e.g. network error after retry
+                exhaustion).
         """
         effective_timeout = timeout if timeout is not None else self._command_timeout
         logger.debug("execute: sandbox=%s command=%r timeout=%s", self.id, command, effective_timeout)
@@ -402,8 +451,24 @@ class KubernetesSandbox(BaseSandbox):
     # -- File operations with virtual-mode resolution & allow_prefixes ---------
 
     def write(self, file_path: str, content: str) -> WriteResult:
-        """Create a new file, subject to virtual-mode resolution and
-        ``allow_prefixes`` policy.
+        """Create or overwrite a file inside the sandbox.
+
+        The path is first resolved through virtual-mode (if enabled) and
+        then checked against the ``allow_prefixes`` policy.  If either
+        check fails, a :class:`~deepagents.backends.protocol.WriteResult`
+        with a descriptive ``error`` string is returned — no command is
+        sent to the container.
+
+        Args:
+            file_path: Absolute or virtual path of the file to write.
+                Parent directories are created automatically.
+            content: UTF-8 text content to write.
+
+        Returns:
+            A :class:`~deepagents.backends.protocol.WriteResult`.
+            On success ``error`` is ``None``; on failure it contains a
+            human-readable message (e.g. path policy violation,
+            permission denied inside the container).
         """
         try:
             resolved = self._resolve_virtual_path(file_path)
@@ -434,8 +499,24 @@ class KubernetesSandbox(BaseSandbox):
         new_string: str,
         replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
-        """Edit a file by string replacement, subject to virtual-mode
-        resolution and ``allow_prefixes`` policy.
+        """Edit a file by replacing an exact string.
+
+        The path is resolved through virtual-mode (if enabled) and
+        checked against the ``allow_prefixes`` policy before the
+        replacement is executed inside the container.
+
+        Args:
+            file_path: Absolute or virtual path of the file to edit.
+            old_string: The exact substring to search for.
+            new_string: The replacement text.
+            replace_all: If ``True`` replace every occurrence of
+                *old_string*; if ``False`` (default) replace only the
+                first occurrence.
+
+        Returns:
+            An :class:`~deepagents.backends.protocol.EditResult`.
+            On success ``error`` is ``None``; on failure it contains a
+            human-readable message.
         """
         try:
             resolved = self._resolve_virtual_path(file_path)
@@ -460,7 +541,18 @@ class KubernetesSandbox(BaseSandbox):
         return result
 
     def read(self, file_path: str, offset: int = 0, limit: int = 2000) -> ReadResult:
-        """Read file content with virtual-mode path resolution."""
+        """Read text content from a file inside the sandbox.
+
+        Args:
+            file_path: Absolute or virtual path of the file to read.
+            offset: 0-based line offset to start reading from.
+            limit: Maximum number of lines to return.
+
+        Returns:
+            A :class:`~deepagents.backends.protocol.ReadResult` with the
+            file content.  On failure ``error`` describes the reason
+            (e.g. ``"file_not_found"``).
+        """
         try:
             resolved = self._resolve_virtual_path(file_path)
         except ValueError as exc:
@@ -468,7 +560,16 @@ class KubernetesSandbox(BaseSandbox):
         return super().read(resolved, offset, limit)
 
     def ls(self, path: str) -> LsResult:
-        """List directory contents with virtual-mode path resolution."""
+        """List directory contents inside the sandbox.
+
+        Args:
+            path: Absolute or virtual directory path to list.
+
+        Returns:
+            An :class:`~deepagents.backends.protocol.LsResult` containing
+            the directory entries.  On failure ``error`` describes the
+            reason.
+        """
         try:
             resolved = self._resolve_virtual_path(path)
         except ValueError as exc:
@@ -476,7 +577,18 @@ class KubernetesSandbox(BaseSandbox):
         return super().ls(resolved)
 
     def glob(self, pattern: str, path: str = "/") -> GlobResult:
-        """Glob file matching with virtual-mode path resolution."""
+        """Find files matching a glob pattern inside the sandbox.
+
+        Args:
+            pattern: Shell-style glob pattern (e.g. ``"*.py"``,
+                ``"**/*.json"``).
+            path: Base directory to search from.  Defaults to ``"/"``.
+
+        Returns:
+            A :class:`~deepagents.backends.protocol.GlobResult` with
+            matching file paths.  On failure ``error`` describes the
+            reason.
+        """
         try:
             resolved = self._resolve_virtual_path(path)
         except ValueError as exc:
@@ -489,7 +601,24 @@ class KubernetesSandbox(BaseSandbox):
         path: str | None = None,
         glob: str | None = None,
     ) -> GrepResult:
-        """Search file content with virtual-mode path resolution."""
+        """Search for a text pattern inside sandbox files.
+
+        When ``virtual_mode`` is enabled and *path* is not specified, the
+        search is automatically scoped to ``root_dir``.
+
+        Args:
+            pattern: Text or regex pattern to search for.
+            path: Directory or file path to search within.  ``None``
+                searches the entire filesystem (or ``root_dir`` in
+                virtual mode).
+            glob: Optional glob filter to restrict which files are
+                searched (e.g. ``"*.py"``).
+
+        Returns:
+            A :class:`~deepagents.backends.protocol.GrepResult` with
+            matching lines and file locations.  On failure ``error``
+            describes the reason.
+        """
         if path is not None:
             try:
                 path = self._resolve_virtual_path(path)
@@ -505,11 +634,28 @@ class KubernetesSandbox(BaseSandbox):
         self,
         files: list[tuple[str, bytes]],
     ) -> list[FileUploadResponse]:
-        """Upload files into the sandbox via base64-encoded shell commands.
+        """Upload one or more files into the sandbox.
 
-        The native SDK ``write()`` endpoint only places files in a fixed upload
-        directory and ignores the full path.  To write to arbitrary absolute
-        paths we encode the content as base64 and pipe it through the shell.
+        Each file is transferred by encoding its content as base64 and
+        piping it through the sandbox shell.  This approach is used
+        instead of the native SDK ``write()`` endpoint, which only
+        supports a fixed upload directory and ignores full paths.
+
+        Parent directories are created automatically.  Virtual-mode path
+        resolution is applied when enabled.
+
+        Args:
+            files: A list of ``(path, content)`` tuples where *path* is
+                an absolute (or virtual) POSIX path inside the container
+                and *content* is the raw file bytes.
+
+        Returns:
+            A list of :class:`~deepagents.backends.protocol.FileUploadResponse`
+            objects, one per input file, in the same order.  Each
+            response contains the ``path`` and an ``error`` that is
+            ``None`` on success or a
+            :data:`~deepagents.backends.protocol.FileOperationError`
+            literal on failure.
         """
         logger.debug(
             "upload_files: sandbox=%s file_count=%d",
@@ -562,12 +708,26 @@ class KubernetesSandbox(BaseSandbox):
         self,
         paths: list[str],
     ) -> list[FileDownloadResponse]:
-        """Download files from the sandbox via base64-encoded shell commands.
+        """Download one or more files from the sandbox.
 
-        Shell-based downloads are used unconditionally because the
-        ``k8s-agent-sandbox`` runtime restricts its native
+        Files are read by running ``base64 <path>`` inside the container
+        and decoding the output.  This shell-based approach is used
+        because the ``k8s-agent-sandbox`` runtime restricts its native
         ``/download`` endpoint to the ``/app`` directory, making it
         incompatible with arbitrary absolute paths.
+
+        Virtual-mode path resolution is applied when enabled.
+
+        Args:
+            paths: A list of absolute (or virtual) POSIX paths to
+                download.
+
+        Returns:
+            A list of :class:`~deepagents.backends.protocol.FileDownloadResponse`
+            objects, one per input path, in the same order.  Each
+            response contains the ``path``, the raw ``content`` bytes
+            (or ``None`` on failure), and an ``error`` that is ``None``
+            on success.
         """
         return self._download_files_shell(paths)
 
@@ -670,7 +830,15 @@ class KubernetesSandbox(BaseSandbox):
     # -- Internals -------------------------------------------------------------
 
     def _check_allow_prefix(self, file_path: str) -> str | None:
-        """Return an error message if *file_path* is not under any allowed prefix, else ``None``."""
+        """Check whether *file_path* passes the ``allow_prefixes`` policy.
+
+        Args:
+            file_path: Resolved absolute path to check.
+
+        Returns:
+            ``None`` if the path is allowed (or no policy is configured);
+            a human-readable error message string otherwise.
+        """
         if self._allow_prefixes is None:
             return None
         for prefix in self._allow_prefixes:
@@ -717,12 +885,19 @@ class KubernetesSandbox(BaseSandbox):
         return normalized
 
     def _run(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-        """Execute a user command wrapped in ``sh -c`` and map to ``ExecuteResponse``.
+        """Execute a user command wrapped in ``sh -c`` and return the response.
 
-        The sandbox runtime's ``/execute`` endpoint runs commands directly
-        without a shell, so pipes (``|``), redirects (``>``), and chaining
-        (``&&``) would be interpreted literally.  Wrapping in ``sh -c``
-        ensures full POSIX shell semantics.
+        The sandbox runtime's ``/execute`` endpoint runs commands without a
+        shell, so pipes, redirects, and chaining operators would be
+        interpreted literally.  Wrapping in ``sh -c`` ensures full POSIX
+        shell semantics.
+
+        Args:
+            command: Shell command string.
+            timeout: Per-command timeout in seconds.
+
+        Returns:
+            An :class:`~deepagents.backends.protocol.ExecuteResponse`.
         """
         resp = self._run_raw(command, timeout=timeout)
         return resp
@@ -915,11 +1090,13 @@ def create_kubernetes_sandbox(
         client: A ``SandboxClient`` instance for managing Kubernetes
             sandbox resources.
         claim_name: Kubernetes ``SandboxClaim`` resource name to look up
-            or create.  Must be a valid DNS subdomain name.
+            or create.  Must be a valid DNS subdomain name (lowercase
+            letters, digits, and hyphens; max 63 characters).
         template_name: ``SandboxTemplate`` CRD name used when creating a
             new sandbox.
         namespace: Kubernetes namespace for the sandbox resources.
         labels: Labels applied to the ``SandboxClaim`` at creation time.
+            Ignored when reconnecting to an existing sandbox.
         sandbox_ready_timeout: Maximum seconds to wait for a newly created
             sandbox to become ready.  Defaults to 180.
         **kwargs: Additional keyword arguments forwarded to the
@@ -927,7 +1104,16 @@ def create_kubernetes_sandbox(
             ``allow_prefixes``, ``virtual_mode``, ``root_dir``).
 
     Returns:
-        A ``KubernetesSandbox`` wrapping the sandbox handle.
+        A :class:`KubernetesSandbox` wrapping the resolved or newly
+        created sandbox handle.  The backend is in
+        ecosystem-standard mode — lifecycle management stays with
+        the caller.
+
+    Raises:
+        kubernetes.client.ApiException: On Kubernetes API errors
+            (e.g. RBAC, namespace not found, template missing).
+        TimeoutError: If the newly created sandbox does not become
+            ready within *sandbox_ready_timeout* seconds.
     """
     from k8s_agent_sandbox.exceptions import SandboxNotFoundError as _SandboxNotFoundError
     from kubernetes import client as _k8s_client
@@ -1002,14 +1188,34 @@ def create_kubernetes_sandbox(
 
 
 def _validate_path(path: str) -> FileOperationError | None:
-    """Return an error literal if *path* is syntactically invalid, else ``None``."""
+    """Return an error literal if *path* is syntactically invalid, else ``None``.
+
+    Args:
+        path: The file path to validate.  Must be a non-empty string
+            starting with ``"/"``.
+
+    Returns:
+        ``"invalid_path"`` if the path is empty or does not start with
+        ``"/"``; ``None`` otherwise.
+    """
     if not path or not path.startswith("/"):
         return "invalid_path"
     return None
 
 
 def _classify_error(output: str) -> FileOperationError:
-    """Map stderr/output text from a failed shell command to a ``FileOperationError``."""
+    """Map shell stderr text to a :data:`~deepagents.backends.protocol.FileOperationError`.
+
+    Scans *output* (case-insensitively) for common POSIX error messages
+    and returns the corresponding typed error literal.
+
+    Args:
+        output: Combined stdout/stderr from a failed shell command.
+
+    Returns:
+        One of ``"permission_denied"``, ``"is_directory"``, or
+        ``"file_not_found"`` (the default fallback).
+    """
     lower = output.lower()
     if "permission denied" in lower:
         return "permission_denied"
