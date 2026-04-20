@@ -20,10 +20,10 @@ jobs:
     name: Integration tests (Python ${{ inputs.python-version }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Set up Python ${{ inputs.python-version }}
         run: uv python install ${{ inputs.python-version }}
@@ -32,7 +32,7 @@ jobs:
         run: uv sync --all-groups
 
       - name: Install Kind
-        uses: helm/kind-action@v1
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
         with:
           install_only: true
 

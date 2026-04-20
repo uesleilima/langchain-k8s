@@ -22,5 +22,9 @@
     "python.testing.pytestEnabled": true,
     "chat.tools.terminal.autoApprove": {
         "uv": true
+    },
+    "sonarlint.connectedMode.project": {
+        "connectionId": "uesleilima",
+        "projectKey": "uesleilima_langchain-k8s"
     }
 }

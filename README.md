@@ -1,8 +1,36 @@
-# langchain-k8s
+<p align="center">
+  <img src="docs/icon.svg" alt="langchain-k8s logo" width="140" />
+</p>
 
-Kubernetes Agent Sandbox integration for [LangChain Deep Agents](https://github.com/langchain-ai/deepagents).
+<h1 align="center">langchain-k8s</h1>
 
-Implements the `BaseSandbox` / `SandboxBackendProtocol` contract using [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) as the execution backend. Agents get isolated, ephemeral Kubernetes pods for running shell commands and file operations — fully self-hosted, no vendor lock-in.
+<p align="center">
+  <strong>Kubernetes-native sandbox execution for LangChain Deep Agents</strong>
+</p>
+
+<p align="center">
+  <a href="https://pypi.org/project/langchain-k8s/"><img src="https://img.shields.io/pypi/v/langchain-k8s?style=flat-square&color=326CE5&label=PyPI" alt="PyPI version"></a>
+  <a href="https://pypi.org/project/langchain-k8s/"><img src="https://img.shields.io/pypi/pyversions/langchain-k8s?style=flat-square&color=F59E0B" alt="Python versions"></a>
+  <a href="https://github.com/uesleilima/langchain-k8s/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/uesleilima/langchain-k8s/ci.yml?style=flat-square&label=CI" alt="CI status"></a>
+  <a href="https://sonarcloud.io/summary/new_code?id=uesleilima_langchain-k8s"><img src="https://sonarcloud.io/api/project_badges/measure?project=uesleilima_langchain-k8s&metric=alert_status" alt="Quality Gate Status"></a>
+  <a href="https://github.com/uesleilima/langchain-k8s/blob/main/LICENSE"><img src="https://img.shields.io/github/license/uesleilima/langchain-k8s?style=flat-square&color=22C55E" alt="License"></a>
+</p>
+
+<p align="center">
+  Give your AI agents their own isolated Kubernetes pods to run shell commands and file operations — fully self-hosted, zero vendor lock-in.
+</p>
+
+---
+
+Implements the [`BaseSandbox`](https://github.com/langchain-ai/deepagents) / `SandboxBackendProtocol` contract using [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox) as the execution backend.
+
+## Why langchain-k8s?
+
+- **Isolated execution** — each agent gets its own pod with its own filesystem
+- **Self-hosted** — runs on any Kubernetes cluster you control
+- **Ephemeral or persistent** — fresh pods per task, or long-lived pods that survive across turns
+- **Drop-in compatible** — implements the LangChain Deep Agents sandbox protocol
+- **Enterprise-ready** — path policies, virtual filesystems, sticky sessions, reconnection
 
 ## Installation
 
@@ -123,6 +151,8 @@ print(results[0].content)
 client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
 ```
 
+---
+
 ## Connection modes
 
 | Mode | Configuration | Use case |
@@ -234,6 +264,8 @@ backend = KubernetesSandbox(
 ```
 
 A fresh sandbox is created for each `start()`/`stop()` cycle. Maximum isolation between invocations at the cost of cold-start latency.
+
+---
 
 ## Enterprise features
 
@@ -442,9 +474,12 @@ kubectl delete sandboxclaims -l team=platform
 
 Labels are only applied at creation time. When reconnecting via `claim_name`, the existing labels on the `SandboxClaim` are preserved.
 
+---
+
 ## Configuration reference
 
-### `KubernetesSandbox` constructor
+<details>
+<summary><strong><code>KubernetesSandbox</code> constructor</strong></summary>
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -465,7 +500,10 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `claim_name` | `str \| None` | `None` | Reconnect to existing sandbox by claim name. Cannot be combined with `sandbox` |
 | `labels` | `dict[str, str] \| None` | `None` | Kubernetes labels applied to `SandboxClaim` |
 
-### `create_kubernetes_sandbox()` factory
+</details>
+
+<details>
+<summary><strong><code>create_kubernetes_sandbox()</code> factory</strong></summary>
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -475,6 +513,10 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `namespace` | `str` | `"default"` | Kubernetes namespace |
 | `labels` | `dict[str, str] \| None` | `None` | Labels applied at creation time |
 | `**kwargs` | | | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
+
+</details>
+
+---
 
 ## Development
 
@@ -523,6 +565,8 @@ k8s/
 └── sandbox-template.yaml          # SandboxTemplate for Python runtime
 ```
 
+---
+
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE) for details.
