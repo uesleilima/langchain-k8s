@@ -50,6 +50,14 @@ def patch_k8s_proxy_config() -> None:
     This function wraps ``__init__`` to re-apply the env var values at
     the very end, achieving the same effect.  It is idempotent and
     safe to call multiple times.
+
+    The patch is applied at import time by :mod:`langchain_k8s.sandbox`
+    and should not normally need to be called directly.
+
+    Raises:
+        No exceptions are raised.  If the ``kubernetes`` package is
+        not installed or the bug is not detected, the function returns
+        silently.
     """
     global _PATCHED  # noqa: PLW0603
     if _PATCHED:
@@ -80,8 +88,17 @@ def patch_k8s_proxy_config() -> None:
 def _is_buggy(config_cls: type) -> bool:
     """Detect whether ``Configuration.__init__`` has the ``no_proxy`` bug.
 
-    Instantiates a ``Configuration`` with ``NO_PROXY`` set and checks
-    whether ``no_proxy`` is ``None`` afterwards.
+    Instantiates a ``Configuration`` with ``NO_PROXY`` set to a sentinel
+    value and checks whether ``no_proxy`` is ``None`` (or differs)
+    afterwards.
+
+    Args:
+        config_cls: The ``kubernetes.client.Configuration`` class to
+            probe.
+
+    Returns:
+        ``True`` if the bug is present and patching is needed;
+        ``False`` otherwise.
     """
     sentinel = "__langchain_k8s_probe__"
     original = os.environ.get("NO_PROXY")
@@ -103,6 +120,17 @@ def _apply_proxy_env(cfg: object) -> None:
 
     Mirrors the intended logic from the ``kubernetes`` client, applied
     in the correct order so that ``no_proxy`` is not clobbered.
+
+    The following environment variables are checked (first match wins
+    within each group):
+
+    - Proxy: ``HTTPS_PROXY``, ``https_proxy``, ``HTTP_PROXY``,
+      ``http_proxy``
+    - No-proxy: ``NO_PROXY``, ``no_proxy``
+
+    Args:
+        cfg: A ``kubernetes.client.Configuration`` instance (or any
+            object with ``proxy`` and ``no_proxy`` attributes).
     """
     for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
         val = os.environ.get(var)
