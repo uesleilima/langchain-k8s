@@ -512,7 +512,7 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `labels` | `dict[str, str] \| None` | `None` | Kubernetes labels applied to `SandboxClaim` |
 | `connection_config` | `SandboxConnectionConfig \| None` | `None` | Pre-built SDK connection config. Overrides `api_url`/`gateway_name`. Supports `SandboxInClusterConnectionConfig` for in-cluster agents |
 | `shutdown_after_seconds` | `int \| None` | `None` | Auto-delete `SandboxClaim` this many seconds after the sandbox finishes (config-based only) |
-| `warmpool` | `str \| None` | `None` | Name of a `SandboxWarmPool` to adopt a pre-provisioned sandbox from, reducing cold-start latency (config-based only) |
+| `warmpool` | `str \| None` | `None` | `SandboxWarmPool` name for pre-provisioned pod adoption (config-based only) |
 
 </details>
 
@@ -526,6 +526,7 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `template_name` | `str` | *(required)* | `SandboxTemplate` CRD name (used when creating) |
 | `namespace` | `str` | `"default"` | Kubernetes namespace |
 | `labels` | `dict[str, str] \| None` | `None` | Labels applied at creation time |
+| `warmpool` | `str \| None` | `None` | `SandboxWarmPool` name for pre-provisioned pod adoption |
 | `**kwargs` | | | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
 
 </details>

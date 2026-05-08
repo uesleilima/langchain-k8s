@@ -329,7 +329,7 @@ class KubernetesSandbox(BaseSandbox):
         logger.debug(
             "KubernetesSandbox created: id=%s template=%s namespace=%s reuse=%s mode=%s"
             " allow_prefixes=%s root_dir=%s virtual_mode=%s skip_cleanup=%s"
-            " claim_name=%s labels=%s owns_lifecycle=%s",
+            " claim_name=%s labels=%s warmpool=%s owns_lifecycle=%s",
             self._id,
             self._template_name,
             self._namespace,
@@ -341,6 +341,7 @@ class KubernetesSandbox(BaseSandbox):
             self._skip_cleanup,
             self._claim_name,
             self._labels,
+            self._warmpool,
             self._owns_lifecycle,
         )
 
