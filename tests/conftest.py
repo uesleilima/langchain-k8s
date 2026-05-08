@@ -46,7 +46,7 @@ def make_mock_client(
     sandbox_handle.files.list = MagicMock(return_value=[])
     sandbox_handle.files.exists = MagicMock(return_value=True)
     sandbox_handle.terminate = MagicMock()
-    sandbox_handle._close_connection = MagicMock()
+    sandbox_handle.close_connection = MagicMock()
 
     # Build the K8sHelper mock (used by create_kubernetes_sandbox factory)
     k8s_helper = MagicMock()

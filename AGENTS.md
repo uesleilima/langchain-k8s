@@ -7,6 +7,7 @@ This file provides guidance for AI agents (e.g. Claude, Codex, Copilot) working 
 `langchain-k8s` is a Python package that integrates Kubernetes-native execution sandboxes with LangChain Deep Agents. It exposes a `KubernetesSandbox` class that implements the `BaseSandbox` protocol from `deepagents`, allowing agents to run shell commands and perform file operations inside ephemeral or persistent Kubernetes pods.
 
 **Key concepts:**
+
 - `KubernetesSandbox` — the main class; wraps the `k8s_agent_sandbox.SandboxClient`
 - **Persistent mode** (`reuse_sandbox=True`, default) — one pod is reused across calls
 - **Ephemeral mode** (`reuse_sandbox=False`) — a fresh pod is created per `start()`/`stop()` cycle
@@ -124,6 +125,22 @@ Ruff is configured with rules: E, F, I, UP, B, SIM. Line length is 120 character
 3. Add unit tests in `tests/unit/test_sandbox.py` using the existing mock client fixtures
 4. Add integration tests in `tests/integration/test_kind.py` if cluster interaction is involved, marked with `@pytest.mark.integration`
 5. Update `README.md` if behavior or configuration options change
+
+## Upgrading the `k8s-agent-sandbox` Dependency
+
+When bumping the `k8s-agent-sandbox` version, update **all** of the following:
+
+| File | What to update |
+|------|---------------|
+| `pyproject.toml` | `k8s-agent-sandbox>=X.Y.Z` version constraint |
+| `k8s/sandbox-template.yaml` | `python-runtime-sandbox` container image tag |
+| `scripts/kind-setup.sh` | `AGENT_SANDBOX_VERSION` default value |
+| `src/langchain_k8s/sandbox.py` | Adapt to any SDK API changes (renamed methods, new parameters) |
+| `tests/conftest.py` | Update mocks if SDK interfaces changed (e.g. method renames) |
+| `tests/unit/test_sandbox.py` | Update tests for mock changes and new features |
+| `README.md` | Document new connection modes, parameters, or behaviour changes |
+
+After updating, run `uv sync` then `make check && make test-unit` to verify.
 
 ## Key Files to Read First
 

@@ -28,6 +28,7 @@ from langchain_k8s.proxy import patch_k8s_proxy_config
 
 if TYPE_CHECKING:
     from k8s_agent_sandbox import SandboxClient
+    from k8s_agent_sandbox.models import SandboxConnectionConfig
     from k8s_agent_sandbox.sandbox import Sandbox
 
 # Apply the NO_PROXY monkey-patch once at import time so that all
@@ -163,6 +164,8 @@ class KubernetesSandbox(BaseSandbox):
         skip_cleanup: bool = False,
         claim_name: str | None = None,
         labels: dict[str, str] | None = None,
+        connection_config: SandboxConnectionConfig | None = None,
+        shutdown_after_seconds: int | None = None,
     ) -> None:
         """Initialise the backend.
 
@@ -237,12 +240,43 @@ class KubernetesSandbox(BaseSandbox):
                 creation time.  Ignored when ``claim_name`` is set
                 (reconnecting to an existing sandbox).  Useful for
                 identifying sandboxes by session, user, or environment.
+            connection_config: Pre-built SDK connection configuration
+                object.  When provided this takes precedence over the
+                individual ``api_url``, ``gateway_name`` and
+                ``server_port`` parameters.  Accepts any
+                ``SandboxConnectionConfig`` variant, including the new
+                ``SandboxInClusterConnectionConfig`` for in-cluster
+                agents that connect directly to sandbox pods (via stable
+                cluster DNS or low-latency pod IP).
+
+                Example::
+
+                    from k8s_agent_sandbox.models import (
+                        SandboxInClusterConnectionConfig,
+                    )
+
+                    backend = KubernetesSandbox(
+                        template_name="python-sandbox-template",
+                        connection_config=SandboxInClusterConnectionConfig(),
+                    )
+
+            shutdown_after_seconds: Automatic TTL-based cleanup.  When
+                set, the Kubernetes controller deletes the
+                ``SandboxClaim`` this many seconds after the sandbox pod
+                finishes (succeeds or fails).  Maps to the upstream
+                ``ttlSecondsAfterFinished`` lifecycle field.  Only
+                effective in config-based mode when a new sandbox is
+                created (ignored when ``sandbox`` or ``claim_name`` is
+                provided).
         """
         if sandbox is not None and claim_name is not None:
             msg = "Cannot specify both 'sandbox' and 'claim_name'"
             raise ValueError(msg)
         if sandbox is None and template_name is None and claim_name is None:
             msg = "Either 'sandbox' or 'template_name' must be provided"
+            raise ValueError(msg)
+        if connection_config is not None and (api_url is not None or gateway_name is not None):
+            msg = "Cannot specify 'connection_config' together with 'api_url' or 'gateway_name'"
             raise ValueError(msg)
 
         self._template_name = template_name
@@ -258,6 +292,8 @@ class KubernetesSandbox(BaseSandbox):
         self._skip_cleanup = skip_cleanup
         self._claim_name = claim_name
         self._labels = labels
+        self._connection_config = connection_config
+        self._shutdown_after_seconds = shutdown_after_seconds
         self._owns_lifecycle = sandbox is None
 
         if allow_prefixes is not None:
@@ -954,11 +990,14 @@ class KubernetesSandbox(BaseSandbox):
                 logger.info("Sandbox reconnected: %s (claim=%s)", self.id, self._claim_name)
             else:
                 assert self._template_name is not None  # validated in __init__
-                self._sandbox = self._client.create_sandbox(
-                    template=self._template_name,
-                    namespace=self._namespace,
-                    labels=self._labels,
-                )
+                create_kwargs: dict[str, Any] = {
+                    "template": self._template_name,
+                    "namespace": self._namespace,
+                    "labels": self._labels,
+                }
+                if self._shutdown_after_seconds is not None:
+                    create_kwargs["shutdown_after_seconds"] = self._shutdown_after_seconds
+                self._sandbox = self._client.create_sandbox(**create_kwargs)
                 logger.info("Sandbox started: %s", self.id)
             self._started = True
 
@@ -981,7 +1020,7 @@ class KubernetesSandbox(BaseSandbox):
                 # Handle mode: only close the local connection.
                 saved_claim = self._sandbox.claim_name
                 try:
-                    self._sandbox._close_connection()
+                    self._sandbox.close_connection()
                 except Exception as exc:
                     logger.warning("Error during sandbox disconnect: %s", exc)
                 logger.info(
@@ -993,7 +1032,7 @@ class KubernetesSandbox(BaseSandbox):
                 if self._skip_cleanup:
                     saved_claim = self._sandbox.claim_name
                     try:
-                        self._sandbox._close_connection()
+                        self._sandbox.close_connection()
                     except Exception as exc:
                         logger.warning("Error during sandbox disconnect: %s", exc)
                     logger.info(
@@ -1022,24 +1061,26 @@ class KubernetesSandbox(BaseSandbox):
             SandboxLocalTunnelConnectionConfig,
         )
 
-        if self._api_url is not None:
-            connection_config = SandboxDirectConnectionConfig(
+        if self._connection_config is not None:
+            resolved_config = self._connection_config
+        elif self._api_url is not None:
+            resolved_config = SandboxDirectConnectionConfig(
                 api_url=self._api_url,
                 server_port=self._server_port,
             )
         elif self._gateway_name is not None:
-            connection_config = SandboxGatewayConnectionConfig(
+            resolved_config = SandboxGatewayConnectionConfig(
                 gateway_name=self._gateway_name,
                 gateway_namespace=self._gateway_namespace,
                 server_port=self._server_port,
             )
         else:
-            connection_config = SandboxLocalTunnelConnectionConfig(
+            resolved_config = SandboxLocalTunnelConnectionConfig(
                 server_port=self._server_port,
             )
 
-        logger.debug("_create_client: connection_config=%s", connection_config)
-        return _SandboxClient(connection_config=connection_config)
+        logger.debug("_create_client: connection_config=%s", resolved_config)
+        return _SandboxClient(connection_config=resolved_config)
 
 
 def create_kubernetes_sandbox(
