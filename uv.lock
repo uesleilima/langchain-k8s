@@ -768,7 +768,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", specifier = ">=0.5.3" },
-    { name = "k8s-agent-sandbox", specifier = ">=0.4.3" },
+    { name = "k8s-agent-sandbox", specifier = ">=0.4.5" },
 ]
 
 [package.metadata.requires-dev]
