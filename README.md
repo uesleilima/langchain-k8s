@@ -512,6 +512,7 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `labels` | `dict[str, str] \| None` | `None` | Kubernetes labels applied to `SandboxClaim` |
 | `connection_config` | `SandboxConnectionConfig \| None` | `None` | Pre-built SDK connection config. Overrides `api_url`/`gateway_name`. Supports `SandboxInClusterConnectionConfig` for in-cluster agents |
 | `shutdown_after_seconds` | `int \| None` | `None` | Auto-delete `SandboxClaim` this many seconds after the sandbox finishes (config-based only) |
+| `warmpool` | `str \| None` | `None` | `SandboxWarmPool` name for pre-provisioned pod adoption (config-based only) |
 
 </details>
 
@@ -525,6 +526,7 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `template_name` | `str` | *(required)* | `SandboxTemplate` CRD name (used when creating) |
 | `namespace` | `str` | `"default"` | Kubernetes namespace |
 | `labels` | `dict[str, str] \| None` | `None` | Labels applied at creation time |
+| `warmpool` | `str \| None` | `None` | `SandboxWarmPool` name for pre-provisioned pod adoption |
 | `**kwargs` | | | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
 
 </details>
@@ -567,7 +569,7 @@ uv run pytest tests/integration/ -v -m integration
 The setup script will:
 
 1. Create a Kind cluster named `langchain-k8s`
-2. Install the agent-sandbox controller and extension CRDs (v0.3.10)
+2. Install the agent-sandbox controller and extension CRDs (v0.4.5)
 3. Enable the extensions controller
 4. Deploy the sandbox router
 5. Apply the `python-sandbox-template` SandboxTemplate

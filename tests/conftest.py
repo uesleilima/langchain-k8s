@@ -1,4 +1,8 @@
-"""Shared test fixtures for langchain-k8s."""
+"""Shared test fixtures for langchain-k8s.
+
+Mock compatibility verified for k8s-agent-sandbox >=0.4.5.
+The mock SandboxClient supports create_sandbox(warmpool=...) via **kwargs.
+"""
 
 from __future__ import annotations
 

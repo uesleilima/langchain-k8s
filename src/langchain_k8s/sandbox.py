@@ -166,6 +166,7 @@ class KubernetesSandbox(BaseSandbox):
         labels: dict[str, str] | None = None,
         connection_config: SandboxConnectionConfig | None = None,
         shutdown_after_seconds: int | None = None,
+        warmpool: str | None = None,
     ) -> None:
         """Initialise the backend.
 
@@ -268,6 +269,10 @@ class KubernetesSandbox(BaseSandbox):
                 effective in config-based mode when a new sandbox is
                 created (ignored when ``sandbox`` or ``claim_name`` is
                 provided).
+            warmpool: Name of a ``SandboxWarmPool`` resource to adopt a
+                pre-provisioned sandbox from, reducing cold-start
+                latency.  Only effective in config-based mode when a
+                new sandbox is created.
         """
         if sandbox is not None and claim_name is not None:
             msg = "Cannot specify both 'sandbox' and 'claim_name'"
@@ -294,6 +299,7 @@ class KubernetesSandbox(BaseSandbox):
         self._labels = labels
         self._connection_config = connection_config
         self._shutdown_after_seconds = shutdown_after_seconds
+        self._warmpool = warmpool
         self._owns_lifecycle = sandbox is None
 
         if allow_prefixes is not None:
@@ -323,7 +329,7 @@ class KubernetesSandbox(BaseSandbox):
         logger.debug(
             "KubernetesSandbox created: id=%s template=%s namespace=%s reuse=%s mode=%s"
             " allow_prefixes=%s root_dir=%s virtual_mode=%s skip_cleanup=%s"
-            " claim_name=%s labels=%s owns_lifecycle=%s",
+            " claim_name=%s labels=%s warmpool=%s owns_lifecycle=%s",
             self._id,
             self._template_name,
             self._namespace,
@@ -335,6 +341,7 @@ class KubernetesSandbox(BaseSandbox):
             self._skip_cleanup,
             self._claim_name,
             self._labels,
+            self._warmpool,
             self._owns_lifecycle,
         )
 
@@ -997,6 +1004,8 @@ class KubernetesSandbox(BaseSandbox):
                 }
                 if self._shutdown_after_seconds is not None:
                     create_kwargs["shutdown_after_seconds"] = self._shutdown_after_seconds
+                if self._warmpool is not None:
+                    create_kwargs["warmpool"] = self._warmpool
                 self._sandbox = self._client.create_sandbox(**create_kwargs)
                 logger.info("Sandbox started: %s", self.id)
             self._started = True
@@ -1090,6 +1099,7 @@ def create_kubernetes_sandbox(
     template_name: str,
     namespace: str = "default",
     labels: dict[str, str] | None = None,
+    warmpool: str | None = None,
     sandbox_ready_timeout: int = 180,
     **kwargs: Any,
 ) -> KubernetesSandbox:
@@ -1138,6 +1148,8 @@ def create_kubernetes_sandbox(
         namespace: Kubernetes namespace for the sandbox resources.
         labels: Labels applied to the ``SandboxClaim`` at creation time.
             Ignored when reconnecting to an existing sandbox.
+        warmpool: Name of a ``SandboxWarmPool`` resource to adopt a
+            pre-provisioned sandbox from.  Ignored when reconnecting.
         sandbox_ready_timeout: Maximum seconds to wait for a newly created
             sandbox to become ready.  Defaults to 180.
         **kwargs: Additional keyword arguments forwarded to the
@@ -1194,11 +1206,16 @@ def create_kubernetes_sandbox(
         # attaching to the existing claim.
         _we_created = False
         try:
+            create_claim_kwargs: dict[str, Any] = {}
+            if labels is not None:
+                create_claim_kwargs["labels"] = labels
+            if warmpool is not None:
+                create_claim_kwargs["warmpool"] = warmpool
             client.k8s_helper.create_sandbox_claim(
                 claim_name,
                 template_name,
                 namespace,
-                labels=labels,
+                **create_claim_kwargs,
             )
             _we_created = True
         except _k8s_client.ApiException as _exc:

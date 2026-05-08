@@ -1770,3 +1770,34 @@ class TestShutdownAfterSeconds:
     def test_default_is_none(self) -> None:
         sb, _, _ = _make_sandbox()
         assert sb._shutdown_after_seconds is None
+
+
+class TestWarmPool:
+    def test_forwarded_to_create_sandbox(self) -> None:
+        """warmpool is passed through to client.create_sandbox()."""
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns", warmpool="my-pool")
+            sb.start()
+            mock.create_sandbox.assert_called_once()
+            call_kwargs = mock.create_sandbox.call_args[1]
+            assert call_kwargs["warmpool"] == "my-pool"
+            sb.stop()
+
+    def test_not_forwarded_when_none(self) -> None:
+        """When warmpool is None, it is not included in kwargs."""
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns")
+            sb.start()
+            call_kwargs = mock.create_sandbox.call_args[1]
+            assert "warmpool" not in call_kwargs
+            sb.stop()
+
+    def test_stored_on_init(self) -> None:
+        sb, _, _ = _make_sandbox(warmpool="fast-pool")
+        assert sb._warmpool == "fast-pool"
+
+    def test_default_is_none(self) -> None:
+        sb, _, _ = _make_sandbox()
+        assert sb._warmpool is None
