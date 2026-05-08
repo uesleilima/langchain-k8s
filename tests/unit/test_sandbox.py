@@ -1150,8 +1150,8 @@ class TestSkipCleanup:
         sb, _, _ = _make_sandbox()
         assert sb._skip_cleanup is False
 
-    def test_skip_cleanup_uses_close_connection(self) -> None:
-        """skip_cleanup=True calls _close_connection() instead of delete_sandbox()."""
+    def test_skip_cleanup_usesclose_connection(self) -> None:
+        """skip_cleanup=True calls close_connection() instead of delete_sandbox()."""
         mock = make_mock_client(claim_name="keep-alive")
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
@@ -1163,8 +1163,8 @@ class TestSkipCleanup:
             sb.start()
             sb.stop()
 
-        # _close_connection should be called (local cleanup only).
-        handle._close_connection.assert_called_once()
+        # close_connection should be called (local cleanup only).
+        handle.close_connection.assert_called_once()
         # delete_sandbox should NOT be called (preserve the SandboxClaim).
         mock.delete_sandbox.assert_not_called()
 
@@ -1179,8 +1179,8 @@ class TestSkipCleanup:
 
         # delete_sandbox should be called with claim_name and namespace.
         mock.delete_sandbox.assert_called_once_with("delete-me", "n")
-        # _close_connection should NOT be called.
-        handle._close_connection.assert_not_called()
+        # close_connection should NOT be called.
+        handle.close_connection.assert_not_called()
 
     def test_context_manager_respects_skip_cleanup(self) -> None:
         mock = make_mock_client(claim_name="ctx-mgr")
@@ -1195,13 +1195,13 @@ class TestSkipCleanup:
         ):
             assert sb._started
 
-        handle._close_connection.assert_called_once()
+        handle.close_connection.assert_called_once()
         mock.delete_sandbox.assert_not_called()
 
-    def test_skip_cleanup_tolerates_close_connection_errors(self) -> None:
+    def test_skip_cleanup_toleratesclose_connection_errors(self) -> None:
         mock = make_mock_client(claim_name="error-case")
         handle = mock._mock_sandbox_handle
-        handle._close_connection.side_effect = RuntimeError("cleanup boom")
+        handle.close_connection.side_effect = RuntimeError("cleanup boom")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
                 template_name="t",
@@ -1303,7 +1303,7 @@ class TestReconnect:
             sb.stop()
 
     def test_reconnect_with_skip_cleanup(self) -> None:
-        """Reconnect + skip_cleanup: get_sandbox to connect, _close_connection on stop."""
+        """Reconnect + skip_cleanup: get_sandbox to connect, close_connection on stop."""
         mock = make_mock_client(claim_name="persistent-claim")
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
@@ -1318,7 +1318,7 @@ class TestReconnect:
 
         mock.get_sandbox.assert_called_once()
         mock.create_sandbox.assert_not_called()
-        handle._close_connection.assert_called_once()
+        handle.close_connection.assert_called_once()
         mock.delete_sandbox.assert_not_called()
 
     def test_reconnect_id_uses_claim_name(self) -> None:
@@ -1441,13 +1441,13 @@ class TestSandboxHandleConstructor:
         assert resp.exit_code == 0
         handle.commands.run.assert_called_once()
 
-    def test_handle_stop_calls_close_connection(self) -> None:
+    def test_handle_stop_callsclose_connection(self) -> None:
         """Handle mode stop() closes local connection, does NOT delete."""
         mock = make_mock_client(claim_name="handle-stop")
         handle = mock._mock_sandbox_handle
         sb = KubernetesSandbox(sandbox=handle, namespace="n")
         sb.stop()
-        handle._close_connection.assert_called_once()
+        handle.close_connection.assert_called_once()
         assert not sb._started
 
     def test_handle_stop_does_not_call_delete(self) -> None:
@@ -1466,7 +1466,7 @@ class TestSandboxHandleConstructor:
             resp = sb.execute("echo ctx")
             assert resp.exit_code == 0
         assert not sb._started
-        handle._close_connection.assert_called_once()
+        handle.close_connection.assert_called_once()
 
     def test_handle_no_reconnect_on_error(self) -> None:
         """Handle mode does not attempt auto-reconnect."""
@@ -1667,3 +1667,106 @@ class TestCreateFactory:
         )
         assert sb._allow_prefixes == ("/workspace/",)
         assert sb._virtual_mode is True
+
+
+# ---------------------------------------------------------------------------
+# connection_config parameter
+# ---------------------------------------------------------------------------
+
+
+class TestConnectionConfig:
+    def test_connection_config_used_directly(self) -> None:
+        """When connection_config is passed, _create_client uses it as-is."""
+        from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+
+        cfg = SandboxInClusterConnectionConfig()
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
+            MockClient.return_value = make_mock_client()
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns", connection_config=cfg)
+            sb.start()
+            MockClient.assert_called_once()
+            assert MockClient.call_args[1]["connection_config"] is cfg
+            sb.stop()
+
+    def test_in_cluster_use_pod_ip(self) -> None:
+        """SandboxInClusterConnectionConfig with use_pod_ip=True is forwarded."""
+        from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+
+        cfg = SandboxInClusterConnectionConfig(use_pod_ip=True)
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
+            MockClient.return_value = make_mock_client()
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns", connection_config=cfg)
+            sb.start()
+            config = MockClient.call_args[1]["connection_config"]
+            assert config.use_pod_ip is True
+            sb.stop()
+
+    def test_connection_config_conflicts_with_api_url(self) -> None:
+        from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+
+        cfg = SandboxInClusterConnectionConfig()
+        with pytest.raises(ValueError, match="connection_config"):
+            KubernetesSandbox(
+                template_name="tpl",
+                namespace="ns",
+                connection_config=cfg,
+                api_url="http://localhost:8080",
+            )
+
+    def test_connection_config_conflicts_with_gateway(self) -> None:
+        from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+
+        cfg = SandboxInClusterConnectionConfig()
+        with pytest.raises(ValueError, match="connection_config"):
+            KubernetesSandbox(
+                template_name="tpl",
+                namespace="ns",
+                connection_config=cfg,
+                gateway_name="my-gw",
+            )
+
+    def test_no_connection_config_falls_back_to_tunnel(self) -> None:
+        """Without connection_config or api_url/gateway, uses local tunnel."""
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
+            MockClient.return_value = make_mock_client()
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns")
+            sb.start()
+            config = MockClient.call_args[1]["connection_config"]
+            assert type(config).__name__ == "SandboxLocalTunnelConnectionConfig"
+            sb.stop()
+
+
+# ---------------------------------------------------------------------------
+# shutdown_after_seconds parameter
+# ---------------------------------------------------------------------------
+
+
+class TestShutdownAfterSeconds:
+    def test_forwarded_to_create_sandbox(self) -> None:
+        """shutdown_after_seconds is passed through to client.create_sandbox()."""
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns", shutdown_after_seconds=600)
+            sb.start()
+            mock.create_sandbox.assert_called_once()
+            call_kwargs = mock.create_sandbox.call_args[1]
+            assert call_kwargs["shutdown_after_seconds"] == 600
+            sb.stop()
+
+    def test_not_forwarded_when_none(self) -> None:
+        """When shutdown_after_seconds is None, it is not included in kwargs."""
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(template_name="tpl", namespace="ns")
+            sb.start()
+            call_kwargs = mock.create_sandbox.call_args[1]
+            assert "shutdown_after_seconds" not in call_kwargs
+            sb.stop()
+
+    def test_stored_on_init(self) -> None:
+        sb, _, _ = _make_sandbox(shutdown_after_seconds=300)
+        assert sb._shutdown_after_seconds == 300
+
+    def test_default_is_none(self) -> None:
+        sb, _, _ = _make_sandbox()
+        assert sb._shutdown_after_seconds is None

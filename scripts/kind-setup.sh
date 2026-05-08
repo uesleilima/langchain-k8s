@@ -20,7 +20,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-langchain-k8s}"
 NAMESPACE="agent-sandbox-system"
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.3.10}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.4.3}"
 
 # Colours for output
 GREEN='\033[0;32m'
@@ -59,6 +59,7 @@ else
 fi
 
 info "Setting kubectl context to kind-${CLUSTER_NAME}"
+kind export kubeconfig --name "${CLUSTER_NAME}" &>/dev/null
 kubectl cluster-info --context "kind-${CLUSTER_NAME}" &>/dev/null
 
 # ── 2. Agent-sandbox controller + CRDs ───────────────────────────────

@@ -160,6 +160,7 @@ client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
 | **Production** | `gateway_name="my-gateway"` | Cluster with Gateway API |
 | **Development** | *(default — no gateway, no api_url)* | Auto `kubectl port-forward` |
 | **Advanced** | `api_url="http://localhost:8080"` | Pre-existing port-forward or in-cluster |
+| **InCluster** | `connection_config=SandboxInClusterConnectionConfig()` | Agent running inside the same Kubernetes cluster |
 
 ```python
 # Production — cluster Gateway
@@ -180,6 +181,16 @@ backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
     api_url="http://localhost:8080",
+)
+
+# InCluster — agent pod connecting directly to sandbox pods
+from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
+
+backend = KubernetesSandbox(
+    template_name="python-sandbox-template",
+    namespace="agent-sandbox-system",
+    connection_config=SandboxInClusterConnectionConfig(),          # cluster DNS
+    # connection_config=SandboxInClusterConnectionConfig(use_pod_ip=True),  # pod IP (lower latency)
 )
 ```
 
@@ -499,6 +510,8 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `skip_cleanup` | `bool` | `False` | Preserve `SandboxClaim` on `stop()` (config-based only) |
 | `claim_name` | `str \| None` | `None` | Reconnect to existing sandbox by claim name. Cannot be combined with `sandbox` |
 | `labels` | `dict[str, str] \| None` | `None` | Kubernetes labels applied to `SandboxClaim` |
+| `connection_config` | `SandboxConnectionConfig \| None` | `None` | Pre-built SDK connection config. Overrides `api_url`/`gateway_name`. Supports `SandboxInClusterConnectionConfig` for in-cluster agents |
+| `shutdown_after_seconds` | `int \| None` | `None` | Auto-delete `SandboxClaim` this many seconds after the sandbox finishes (config-based only) |
 
 </details>
 
