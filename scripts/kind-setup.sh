@@ -20,7 +20,7 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 CLUSTER_NAME="${CLUSTER_NAME:-langchain-k8s}"
 NAMESPACE="agent-sandbox-system"
-AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.4.5}"
+AGENT_SANDBOX_VERSION="${AGENT_SANDBOX_VERSION:-v0.4.6}"
 
 # Colours for output
 GREEN='\033[0;32m'
