@@ -80,8 +80,10 @@ kubectl delete statefulset agent-sandbox-controller -n "${NAMESPACE}" --ignore-n
 # `kubectl patch` to enable extensions any more: the bundle's Deployment
 # already carries `--extensions`, and patching the args array would replace
 # it wholesale, silently dropping `--leader-elect=true`.
+RELEASE_URL="https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}"
+
 info "Installing agent-sandbox ${AGENT_SANDBOX_VERSION} (controller + extensions)"
-kubectl apply -f "https://github.com/kubernetes-sigs/agent-sandbox/releases/download/${AGENT_SANDBOX_VERSION}/sandbox-with-extensions.yaml"
+kubectl apply -f "${RELEASE_URL}/sandbox-with-extensions.yaml"
 
 # Must complete before any claim or warm pool is created: v1alpha1 is served
 # through a conversion webhook hosted by this controller, and resources
@@ -92,8 +94,16 @@ kubectl rollout status deployment/agent-sandbox-controller \
 
 # ── 3. Sandbox router ────────────────────────────────────────────────
 
-info "Deploying sandbox-router"
-kubectl apply -f "${PROJECT_DIR}/k8s/sandbox-router.yaml"
+# Applied through the k8s/dev-kind overlay, which adds
+# ALLOW_UNAUTHENTICATED_ROUTER=true.  The base k8s/sandbox-router.yaml sets no
+# auth env vars, so on its own the router refuses to start (agent-sandbox
+# v0.5.0 hardening, kubernetes-sigs#755) — that keeps the reusable manifest
+# secure-by-default and confines the insecure setting to a directory named
+# for the only place it is safe.  See k8s/dev-kind/kustomization.yaml for why
+# we opt out instead of setting a token, and for the --load-restrictor flag.
+info "Deploying sandbox-router (dev-kind overlay: unauthenticated)"
+kubectl kustomize --load-restrictor LoadRestrictionsNone "${PROJECT_DIR}/k8s/dev-kind" \
+    | kubectl apply -f -
 
 info "Waiting for sandbox-router to be ready"
 kubectl rollout status deployment/sandbox-router \

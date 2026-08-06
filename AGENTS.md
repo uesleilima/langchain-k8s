@@ -233,7 +233,7 @@ Ruff is configured with rules: E, F, I, UP, B, SIM. Line length is 120 character
 1. Implement in `sandbox.py`; keep `proxy.py` isolated (it is infrastructure-only)
 2. Export new public symbols from `__init__.py` and add to `__all__`
 3. Add unit tests in `tests/unit/test_sandbox.py` using the existing mock client fixtures
-4. Add integration tests in `tests/integration/test_kind.py` if cluster interaction is involved, marked with `@pytest.mark.integration`
+4. Add integration tests under `tests/integration/` if cluster interaction is involved — `test_kind.py` for the backend itself, `test_agent_kind.py` and `test_deepagent_kind.py` for agent-loop coverage. Do **not** decorate individual tests: each file sets `pytestmark = pytest.mark.integration` at module scope, and `tests/integration/conftest.py` auto-skips the whole directory when the Kind cluster is absent, so marker selection and skipping work per-directory regardless of how tests are split across files
 5. Update `README.md` if behavior or configuration options change
 
 ## Upgrading the `k8s-agent-sandbox` Dependency

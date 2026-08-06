@@ -21,6 +21,17 @@ Two deliberate limits on that autospec:
   ``files`` are instance attributes too, so autospec would give them no
   child specs while breaking the many tests that reach into
   ``.commands.run`` / ``.files.read``.
+
+``SandboxClient`` and ``K8sHelper`` are imported at **module scope on
+purpose**, and that is the one place in this repo where the lazy-import idiom
+used throughout ``src/`` must not be copied.  Nearly every test calls
+``make_mock_client()`` inside a ``patch("k8s_agent_sandbox.SandboxClient")``
+block; a deferred import would therefore resolve the name to the test's own
+``MagicMock`` and ``create_autospec`` would fail outright with
+``InvalidSpecError: Cannot autospec a Mock object``.  Binding the names here,
+at import time, snapshots the real classes before any test can patch the
+module attribute.  Invariant 4 in ``AGENTS.md`` is about keeping the SDK out
+of ``src/`` import paths — it does not apply to test scaffolding.
 """
 
 from __future__ import annotations
