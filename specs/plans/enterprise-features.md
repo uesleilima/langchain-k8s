@@ -67,16 +67,16 @@ Following `FilesystemBackend`'s pattern, `virtual_mode=True` anchors all paths u
 
 **How BaseSandbox methods embed paths** (determines override strategy):
 
-| Method | Path mechanism | Safe to modify path before `super()`? |
-|--------|---------------|---------------------------------------|
-| `write()` | base64-encoded JSON via stdin | ✅ Yes |
-| `edit()` | base64-encoded JSON via stdin | ✅ Yes |
-| `read()` | Raw string interpolation: `file_path = '{file_path}'` | ✅ Yes (resolved path is a clean absolute path under root_dir, no metacharacters) |
-| `ls_info()` | Raw string interpolation: `path = '{path}'` | ✅ Yes (same reasoning) |
-| `glob_info()` | base64-encoded | ✅ Yes |
-| `grep_raw()` | `shlex.quote()` | ✅ Yes |
-| `upload_files()` | Custom implementation (already overridden) | ✅ Yes |
-| `download_files()` | Custom implementation (already overridden) | ✅ Yes |
+| Method             | Path mechanism                                        | Safe to modify path before `super()`?                                             |
+| ------------------ | ----------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `write()`          | base64-encoded JSON via stdin                         | ✅ Yes                                                                            |
+| `edit()`           | base64-encoded JSON via stdin                         | ✅ Yes                                                                            |
+| `read()`           | Raw string interpolation: `file_path = '{file_path}'` | ✅ Yes (resolved path is a clean absolute path under root_dir, no metacharacters) |
+| `ls_info()`        | Raw string interpolation: `path = '{path}'`           | ✅ Yes (same reasoning)                                                           |
+| `glob_info()`      | base64-encoded                                        | ✅ Yes                                                                            |
+| `grep_raw()`       | `shlex.quote()`                                       | ✅ Yes                                                                            |
+| `upload_files()`   | Custom implementation (already overridden)            | ✅ Yes                                                                            |
+| `download_files()` | Custom implementation (already overridden)            | ✅ Yes                                                                            |
 
 **Key insight**: For `read()` and `ls_info()`, which use raw string interpolation, the resolved path is always a clean absolute path like `/workspace/src/main.py` — no single quotes, no shell metacharacters. So calling `super().read(resolved_path)` is safe. The shell injection risk in BaseSandbox only arises from adversarial path content, which our `_resolve_virtual_path()` sanitizes.
 
@@ -228,14 +228,14 @@ def __init__(
 
 ## Files Modified
 
-| File | Changes |
-|------|---------|
-| `src/langchain_k8s/sandbox.py` | Replaced deny→allow, added root_dir + path resolution, overrode read/ls_info/glob_info/grep_raw, skip_cleanup, claim_name reconnect, labels, claim_name property |
-| `tests/unit/test_sandbox.py` | Replaced `TestDenyPrefixes` → `TestAllowPrefixes`, updated `TestVirtualMode` for root_dir + path resolution, added `TestSkipCleanup`, `TestClaimName`, `TestReconnect`, `TestLabels` |
-| `tests/integration/test_kind.py` | Added `TestReconnect` (reconnect to existing sandbox, claim_name property), `TestLabels` (labels applied to sandbox) |
-| `tests/conftest.py` | Added `get_sandbox` mock to `make_mock_client()` |
-| `README.md` | Added enterprise features section (allow_prefixes, virtual_mode, skip_cleanup, sticky sessions, reconnect, labels, updated config reference) |
-| `specs/plans/enterprise-features.md` | This plan document |
+| File                                 | Changes                                                                                                                                                                              |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `src/langchain_k8s/sandbox.py`       | Replaced deny→allow, added root_dir + path resolution, overrode read/ls_info/glob_info/grep_raw, skip_cleanup, claim_name reconnect, labels, claim_name property                     |
+| `tests/unit/test_sandbox.py`         | Replaced `TestDenyPrefixes` → `TestAllowPrefixes`, updated `TestVirtualMode` for root_dir + path resolution, added `TestSkipCleanup`, `TestClaimName`, `TestReconnect`, `TestLabels` |
+| `tests/integration/test_kind.py`     | Added `TestReconnect` (reconnect to existing sandbox, claim_name property), `TestLabels` (labels applied to sandbox)                                                                 |
+| `tests/conftest.py`                  | Added `get_sandbox` mock to `make_mock_client()`                                                                                                                                     |
+| `README.md`                          | Added enterprise features section (allow_prefixes, virtual_mode, skip_cleanup, sticky sessions, reconnect, labels, updated config reference)                                         |
+| `specs/plans/enterprise-features.md` | This plan document                                                                                                                                                                   |
 
 ---
 

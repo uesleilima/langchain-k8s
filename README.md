@@ -28,7 +28,7 @@ Implements the [`BaseSandbox`](https://github.com/langchain-ai/deepagents) / `Sa
 
 - **Isolated execution** — each agent gets its own pod with its own filesystem
 - **Self-hosted** — runs on any Kubernetes cluster you control
-- **Ephemeral or persistent** — fresh pods per task, or long-lived pods that survive across turns
+- **Disposable or durable** — tear a pod down at the end of a task, or keep it alive and reconnect to it across turns
 - **Drop-in compatible** — implements the LangChain Deep Agents sandbox protocol
 - **Enterprise-ready** — path policies, virtual filesystems, sticky sessions, reconnection
 
@@ -155,12 +155,12 @@ client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
 
 ## Connection modes
 
-| Mode | Configuration | Use case |
-|------|--------------|----------|
-| **Production** | `gateway_name="my-gateway"` | Cluster with Gateway API |
-| **Development** | *(default — no gateway, no api_url)* | Auto `kubectl port-forward` |
-| **Advanced** | `api_url="http://localhost:8080"` | Pre-existing port-forward or in-cluster |
-| **InCluster** | `connection_config=SandboxInClusterConnectionConfig()` | Agent running inside the same Kubernetes cluster |
+| Mode            | Configuration                                          | Use case                                         |
+| --------------- | ------------------------------------------------------ | ------------------------------------------------ |
+| **Production**  | `gateway_name="my-gateway"`                            | Cluster with Gateway API                         |
+| **Development** | _(default — no gateway, no api_url)_                   | Auto `kubectl port-forward`                      |
+| **Advanced**    | `api_url="http://localhost:8080"`                      | Pre-existing port-forward or in-cluster          |
+| **InCluster**   | `connection_config=SandboxInClusterConnectionConfig()` | Agent running inside the same Kubernetes cluster |
 
 ```python
 # Production — cluster Gateway
@@ -252,19 +252,20 @@ result = agent.invoke(
 client.delete_sandbox(f"sandbox-user-session-abc", "agent-sandbox-system")
 ```
 
-### Persistent (config-based, default)
+### Config-based lifecycle
+
+In config-based mode the sandbox pod is created lazily on first use and reused for every subsequent call. Filesystem state persists for the life of the backend. `stop()` deletes the `SandboxClaim` — unless you pass `skip_cleanup=True`, which leaves the pod running so you can reconnect to it later by `claim_name`.
 
 ```python
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
-    reuse_sandbox=True,  # default
 )
 ```
 
-One sandbox pod is created lazily and reused across all calls. Fast for cached, long-lived agents. Filesystem state persists between invocations. Auto-reconnects if the pod dies.
+To get a fresh pod, create a fresh backend — or call `stop()` then `start()`, which deletes the claim and provisions a new one.
 
-### Ephemeral (config-based)
+### `reuse_sandbox` — automatic reconnection
 
 ```python
 backend = KubernetesSandbox(
@@ -274,7 +275,9 @@ backend = KubernetesSandbox(
 )
 ```
 
-A fresh sandbox is created for each `start()`/`stop()` cycle. Maximum isolation between invocations at the cost of cold-start latency.
+`reuse_sandbox` controls **error recovery, not pod lifetime**. With the default `True`, a failure inside `execute()` causes the backend to drop the dead sandbox, provision a replacement, and retry the command once before giving up. Setting it to `False` disables that retry, so connection errors propagate to the caller immediately.
+
+It has no effect on `start()`/`stop()`, and it does not create a pod per invocation. Auto-reconnect is also inactive in handle mode, where the caller owns the lifecycle.
 
 ---
 
@@ -330,7 +333,7 @@ backend = KubernetesSandbox(
 
 ### Container permissions vs. sandbox policy
 
-`allow_prefixes` and `virtual_mode` are **tool-level policies** enforced by `KubernetesSandbox` *before* any command reaches the container. They do **not** grant filesystem permissions inside the container itself.
+`allow_prefixes` and `virtual_mode` are **tool-level policies** enforced by `KubernetesSandbox` _before_ any command reaches the container. They do **not** grant filesystem permissions inside the container itself.
 
 For file operations to succeed, two conditions must be met:
 
@@ -347,24 +350,25 @@ but the container's OS user cannot write to it.
 
 **Common writable locations** (no extra configuration needed):
 
-| Directory | Notes |
-|-----------|-------|
-| `/tmp` | Always writable; good default for `root_dir` |
-| `/home/<user>` | Writable if the container runs as that user |
+| Directory      | Notes                                        |
+| -------------- | -------------------------------------------- |
+| `/tmp`         | Always writable; good default for `root_dir` |
+| `/home/<user>` | Writable if the container runs as that user  |
 
 **Making a custom directory writable** in your `SandboxTemplate`:
 
 ```yaml
-apiVersion: agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
+  namespace: agent-sandbox-system
 spec:
-  template:
+  podTemplate:
     spec:
       containers:
-        - name: sandbox
-          image: python:3.12-slim
+        - name: python-runtime
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
           volumeMounts:
             - name: workspace
               mountPath: /workspace
@@ -492,42 +496,42 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 <details>
 <summary><strong><code>KubernetesSandbox</code> constructor</strong></summary>
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `sandbox` | `Sandbox \| None` | `None` | Pre-created `k8s_agent_sandbox.Sandbox` handle (ecosystem-standard mode) |
-| `template_name` | `str \| None` | `None` | `SandboxTemplate` CRD name. Required when `sandbox` is not provided |
-| `namespace` | `str` | `"default"` | Kubernetes namespace |
-| `gateway_name` | `str \| None` | `None` | Gateway name (production mode, config-based only) |
-| `gateway_namespace` | `str` | `"default"` | Gateway namespace |
-| `api_url` | `str \| None` | `None` | Direct router URL (advanced mode, config-based only) |
-| `server_port` | `int` | `8888` | Sandbox runtime port |
-| `reuse_sandbox` | `bool` | `True` | Reuse sandbox across calls (config-based only) |
-| `max_output_size` | `int` | `1048576` | Max output bytes before truncation |
-| `command_timeout` | `int` | `300` | Default command timeout in seconds. Can be overridden per-call via `execute(timeout=...)` |
-| `allow_prefixes` | `list[str] \| None` | `None` | Restrict `write`/`edit` to these path prefixes |
-| `root_dir` | `str \| None` | `None` | Root directory for virtual filesystem mode. Defaults to `/tmp` when `virtual_mode=True` |
-| `virtual_mode` | `bool` | `False` | Resolve all paths under `root_dir` |
-| `skip_cleanup` | `bool` | `False` | Preserve `SandboxClaim` on `stop()` (config-based only) |
-| `claim_name` | `str \| None` | `None` | Reconnect to existing sandbox by claim name. Cannot be combined with `sandbox` |
-| `labels` | `dict[str, str] \| None` | `None` | Kubernetes labels applied to `SandboxClaim` |
-| `connection_config` | `SandboxConnectionConfig \| None` | `None` | Pre-built SDK connection config. Overrides `api_url`/`gateway_name`. Supports `SandboxInClusterConnectionConfig` for in-cluster agents |
-| `shutdown_after_seconds` | `int \| None` | `None` | Auto-delete `SandboxClaim` this many seconds after the sandbox finishes (config-based only) |
-| `warmpool` | `str \| None` | `None` | `SandboxWarmPool` name for pre-provisioned pod adoption (config-based only) |
+| Parameter                | Type                              | Default     | Description                                                                                                                            |
+| ------------------------ | --------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox`                | `Sandbox \| None`                 | `None`      | Pre-created `k8s_agent_sandbox.Sandbox` handle (ecosystem-standard mode)                                                               |
+| `template_name`          | `str \| None`                     | `None`      | `SandboxTemplate` CRD name. Required when `sandbox` is not provided                                                                    |
+| `namespace`              | `str`                             | `"default"` | Kubernetes namespace                                                                                                                   |
+| `gateway_name`           | `str \| None`                     | `None`      | Gateway name (production mode, config-based only)                                                                                      |
+| `gateway_namespace`      | `str`                             | `"default"` | Gateway namespace                                                                                                                      |
+| `api_url`                | `str \| None`                     | `None`      | Direct router URL (advanced mode, config-based only)                                                                                   |
+| `server_port`            | `int`                             | `8888`      | Sandbox runtime port                                                                                                                   |
+| `reuse_sandbox`          | `bool`                            | `True`      | Auto-reconnect and retry once when `execute()` hits a connection error (config-based only). Does not affect pod lifetime               |
+| `max_output_size`        | `int`                             | `1048576`   | Max output bytes before truncation                                                                                                     |
+| `command_timeout`        | `int`                             | `300`       | Default command timeout in seconds. Can be overridden per-call via `execute(timeout=...)`                                              |
+| `allow_prefixes`         | `list[str] \| None`               | `None`      | Restrict `write`/`edit` to these path prefixes                                                                                         |
+| `root_dir`               | `str \| None`                     | `None`      | Root directory for virtual filesystem mode. Defaults to `/tmp` when `virtual_mode=True`                                                |
+| `virtual_mode`           | `bool`                            | `False`     | Resolve all paths under `root_dir`                                                                                                     |
+| `skip_cleanup`           | `bool`                            | `False`     | Preserve `SandboxClaim` on `stop()` (config-based only)                                                                                |
+| `claim_name`             | `str \| None`                     | `None`      | Reconnect to existing sandbox by claim name. Cannot be combined with `sandbox`                                                         |
+| `labels`                 | `dict[str, str] \| None`          | `None`      | Kubernetes labels applied to `SandboxClaim`                                                                                            |
+| `connection_config`      | `SandboxConnectionConfig \| None` | `None`      | Pre-built SDK connection config. Overrides `api_url`/`gateway_name`. Supports `SandboxInClusterConnectionConfig` for in-cluster agents |
+| `shutdown_after_seconds` | `int \| None`                     | `None`      | Auto-delete `SandboxClaim` this many seconds after the sandbox finishes (config-based only)                                            |
+| `warmpool`               | `str \| None`                     | `None`      | `SandboxWarmPool` name for pre-provisioned pod adoption (config-based only)                                                            |
 
 </details>
 
 <details>
 <summary><strong><code>create_kubernetes_sandbox()</code> factory</strong></summary>
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `client` | `SandboxClient` | *(required)* | `k8s_agent_sandbox.SandboxClient` instance |
-| `claim_name` | `str` | *(required)* | `SandboxClaim` name to look up or create |
-| `template_name` | `str` | *(required)* | `SandboxTemplate` CRD name (used when creating) |
-| `namespace` | `str` | `"default"` | Kubernetes namespace |
-| `labels` | `dict[str, str] \| None` | `None` | Labels applied at creation time |
-| `warmpool` | `str \| None` | `None` | `SandboxWarmPool` name for pre-provisioned pod adoption |
-| `**kwargs` | | | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
+| Parameter       | Type                     | Default      | Description                                                              |
+| --------------- | ------------------------ | ------------ | ------------------------------------------------------------------------ |
+| `client`        | `SandboxClient`          | _(required)_ | `k8s_agent_sandbox.SandboxClient` instance                               |
+| `claim_name`    | `str`                    | _(required)_ | `SandboxClaim` name to look up or create                                 |
+| `template_name` | `str`                    | _(required)_ | `SandboxTemplate` CRD name (used when creating)                          |
+| `namespace`     | `str`                    | `"default"`  | Kubernetes namespace                                                     |
+| `labels`        | `dict[str, str] \| None` | `None`       | Labels applied at creation time                                          |
+| `warmpool`      | `str \| None`            | `None`       | `SandboxWarmPool` name for pre-provisioned pod adoption                  |
+| `**kwargs`      |                          |              | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
 
 </details>
 
@@ -569,7 +573,7 @@ uv run pytest tests/integration/ -v -m integration
 The setup script will:
 
 1. Create a Kind cluster named `langchain-k8s`
-2. Install the agent-sandbox controller and extension CRDs (v0.4.5)
+2. Install the agent-sandbox controller and extension CRDs (v0.4.6, overridable via `AGENT_SANDBOX_VERSION`)
 3. Enable the extensions controller
 4. Deploy the sandbox router
 5. Apply the `python-sandbox-template` SandboxTemplate
