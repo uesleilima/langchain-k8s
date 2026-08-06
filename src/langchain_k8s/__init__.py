@@ -11,7 +11,7 @@ Quick start::
     from langchain_k8s import KubernetesSandbox
 
     backend = KubernetesSandbox(
-        template_name="python-sandbox-template",
+        warmpool_name="python-sandbox-pool",
         namespace="agent-sandbox-system",
     )
     with backend:

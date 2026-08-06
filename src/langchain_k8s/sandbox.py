@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MAX_OUTPUT_SIZE = 1_048_576  # 1 MB
 _DEFAULT_COMMAND_TIMEOUT = 300  # 5 minutes
 _DEFAULT_ROOT_DIR = "/tmp"
+_DEFAULT_ROUTER_NAMESPACE = "agent-sandbox-system"
 
 
 class KubernetesSandbox(BaseSandbox):
@@ -64,7 +65,7 @@ class KubernetesSandbox(BaseSandbox):
         from langchain_k8s import KubernetesSandbox
 
         client = SandboxClient(connection_config=...)
-        handle = client.create_sandbox(template="python-sandbox-template")
+        handle = client.create_sandbox(warmpool="python-sandbox-pool")
         backend = KubernetesSandbox(sandbox=handle)
 
         result = backend.execute("echo hello")
@@ -74,12 +75,12 @@ class KubernetesSandbox(BaseSandbox):
     Config-based mode (convenience / backward-compatible)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-    Pass ``template_name`` and connection parameters.  The sandbox is
+    Pass ``warmpool_name`` and connection parameters.  The sandbox is
     created lazily on first use and destroyed on ``stop()``.  This mode
     supports ``start()``/``stop()`` lifecycle methods::
 
         backend = KubernetesSandbox(
-            template_name="python-sandbox-template",
+            warmpool_name="python-sandbox-pool",
             namespace="agent-sandbox-system",
         )
         backend.start()
@@ -138,7 +139,7 @@ class KubernetesSandbox(BaseSandbox):
             backend = create_kubernetes_sandbox(
                 client=client,
                 claim_name=f"sandbox-{thread_id}",
-                template_name="python-sandbox-template",
+                warmpool_name="python-sandbox-pool",
                 namespace="agent-sandbox-system",
                 labels={"thread_id": thread_id},
             )
@@ -149,7 +150,7 @@ class KubernetesSandbox(BaseSandbox):
         self,
         *,
         sandbox: Sandbox | None = None,
-        template_name: str | None = None,
+        warmpool_name: str | None = None,
         namespace: str = "default",
         gateway_name: str | None = None,
         gateway_namespace: str = "default",
@@ -166,11 +167,14 @@ class KubernetesSandbox(BaseSandbox):
         labels: dict[str, str] | None = None,
         connection_config: SandboxConnectionConfig | None = None,
         shutdown_after_seconds: int | None = None,
-        warmpool: str | None = None,
+        pod_labels: dict[str, str] | None = None,
+        pod_annotations: dict[str, str] | None = None,
+        volume_claim_templates: list[dict[str, Any]] | None = None,
+        router_namespace: str = _DEFAULT_ROUTER_NAMESPACE,
     ) -> None:
         """Initialise the backend.
 
-        Either ``sandbox`` (ecosystem-standard) or ``template_name``
+        Either ``sandbox`` (ecosystem-standard) or ``warmpool_name``
         (config-based) must be provided, but not both ``sandbox`` and
         ``claim_name`` simultaneously.
 
@@ -180,8 +184,18 @@ class KubernetesSandbox(BaseSandbox):
                 and lifecycle management is the caller's responsibility.
                 This is the standard pattern used by all LangChain Deep
                 Agents sandbox backends.
-            template_name: Name of the ``SandboxTemplate`` CRD to use.
-                Required when ``sandbox`` is not provided.
+            warmpool_name: Name of the ``SandboxWarmPool`` CRD to claim a
+                sandbox from.  Required when ``sandbox`` is not provided.
+
+                .. note::
+                   Since agent-sandbox v0.5.0 (API ``v1beta1``) a
+                   ``SandboxClaim`` references a ``SandboxWarmPool``, not a
+                   ``SandboxTemplate`` — the pool is what points at the
+                   template.  A pool with ``replicas: 0`` gives pure
+                   on-demand (cold-start) sandboxes; ``replicas: 1`` or more
+                   keeps pods pre-warmed to cut start-up latency.
+
+
             namespace: Kubernetes namespace for the sandbox resources.
             gateway_name: Gateway resource name (production mode).
             gateway_namespace: Kubernetes namespace of the Gateway resource.
@@ -237,18 +251,27 @@ class KubernetesSandbox(BaseSandbox):
                 sandbox to reconnect to instead of creating a new one.
                 When set, ``start()`` calls ``SandboxClient.get_sandbox()``
                 to re-attach.  Cannot be combined with ``sandbox``.
-            labels: Kubernetes labels applied to the ``SandboxClaim`` at
-                creation time.  Ignored when ``claim_name`` is set
-                (reconnecting to an existing sandbox).  Useful for
+            labels: Kubernetes labels applied to the ``SandboxClaim``
+                object at creation time.  Ignored when ``claim_name`` is
+                set (reconnecting to an existing sandbox).  Useful for
                 identifying sandboxes by session, user, or environment.
+
+                .. note::
+                   The SDK always stamps
+                   ``agents.x-k8s.io/created-by: python-client`` alongside
+                   these, so a claim's label set is never exactly what was
+                   passed here.
+
             connection_config: Pre-built SDK connection configuration
                 object.  When provided this takes precedence over the
                 individual ``api_url``, ``gateway_name`` and
                 ``server_port`` parameters.  Accepts any
-                ``SandboxConnectionConfig`` variant, including the new
+                ``SandboxConnectionConfig`` variant, including
                 ``SandboxInClusterConnectionConfig`` for in-cluster
-                agents that connect directly to sandbox pods (via stable
-                cluster DNS or low-latency pod IP).
+                agents that connect directly to sandbox pods.  That
+                variant prefers the pod IP reported in the ``Sandbox``
+                status and falls back to cluster DNS automatically —
+                there is no flag to choose between them.
 
                 Example::
 
@@ -257,7 +280,7 @@ class KubernetesSandbox(BaseSandbox):
                     )
 
                     backend = KubernetesSandbox(
-                        template_name="python-sandbox-template",
+                        warmpool_name="python-sandbox-pool",
                         connection_config=SandboxInClusterConnectionConfig(),
                     )
 
@@ -269,22 +292,47 @@ class KubernetesSandbox(BaseSandbox):
                 effective in config-based mode when a new sandbox is
                 created (ignored when ``sandbox`` or ``claim_name`` is
                 provided).
-            warmpool: Name of a ``SandboxWarmPool`` resource to adopt a
-                pre-provisioned sandbox from, reducing cold-start
-                latency.  Only effective in config-based mode when a
-                new sandbox is created.
+            pod_labels: Labels stamped onto the running sandbox **Pod**
+                via ``spec.additionalPodMetadata.labels``.  Unlike
+                ``labels`` — which land on the ``SandboxClaim`` object —
+                these are readable from inside the container through the
+                Downward API.  Validated client-side for RFC 1123 syntax
+                only; the controller may still reject reserved or
+                restricted-domain keys.  Creation-time only.
+            pod_annotations: Annotations stamped onto the running sandbox
+                **Pod** via ``spec.additionalPodMetadata.annotations``.
+                Creation-time only.
+            volume_claim_templates: Raw ``PersistentVolumeClaim`` template
+                fragments merged into ``spec.volumeClaimTemplates``, giving
+                the sandbox durable storage instead of container-local
+                scratch space.  Creation-time only.
+
+                .. important::
+                   A volume claim template only provides the *volume*.  The
+                   ``SandboxTemplate`` pod spec must carry a matching
+                   ``volumeMounts`` entry for the path to appear inside the
+                   container, and the cluster needs a working
+                   ``StorageClass``.
+
+            router_namespace: Namespace of the ``sandbox-router-svc``
+                Service that automatic ``kubectl port-forward``
+                (development mode) tunnels into.  Only consulted when no
+                ``connection_config``, ``api_url`` or ``gateway_name`` is
+                given.  Must be a valid DNS label — this is enforced by
+                the SDK at ``start()`` rather than at construction, since
+                ``__init__`` never builds SDK objects.
         """
         if sandbox is not None and claim_name is not None:
             msg = "Cannot specify both 'sandbox' and 'claim_name'"
             raise ValueError(msg)
-        if sandbox is None and template_name is None and claim_name is None:
-            msg = "Either 'sandbox' or 'template_name' must be provided"
+        if sandbox is None and warmpool_name is None and claim_name is None:
+            msg = "Either 'sandbox' or 'warmpool_name' must be provided"
             raise ValueError(msg)
         if connection_config is not None and (api_url is not None or gateway_name is not None):
             msg = "Cannot specify 'connection_config' together with 'api_url' or 'gateway_name'"
             raise ValueError(msg)
 
-        self._template_name = template_name
+        self._warmpool_name = warmpool_name
         self._namespace = namespace
         self._gateway_name = gateway_name
         self._gateway_namespace = gateway_namespace
@@ -299,7 +347,10 @@ class KubernetesSandbox(BaseSandbox):
         self._labels = labels
         self._connection_config = connection_config
         self._shutdown_after_seconds = shutdown_after_seconds
-        self._warmpool = warmpool
+        self._pod_labels = pod_labels
+        self._pod_annotations = pod_annotations
+        self._volume_claim_templates = volume_claim_templates
+        self._router_namespace = router_namespace
         self._owns_lifecycle = sandbox is None
 
         if allow_prefixes is not None:
@@ -327,11 +378,11 @@ class KubernetesSandbox(BaseSandbox):
             self._started = False
 
         logger.debug(
-            "KubernetesSandbox created: id=%s template=%s namespace=%s reuse=%s mode=%s"
+            "KubernetesSandbox created: id=%s warmpool=%s namespace=%s reuse=%s mode=%s"
             " allow_prefixes=%s root_dir=%s virtual_mode=%s skip_cleanup=%s"
-            " claim_name=%s labels=%s warmpool=%s owns_lifecycle=%s",
+            " claim_name=%s labels=%s pod_labels=%s owns_lifecycle=%s",
             self._id,
-            self._template_name,
+            self._warmpool_name,
             self._namespace,
             self._reuse_sandbox,
             "handle" if sandbox is not None else ("gateway" if gateway_name else ("api_url" if api_url else "tunnel")),
@@ -341,7 +392,7 @@ class KubernetesSandbox(BaseSandbox):
             self._skip_cleanup,
             self._claim_name,
             self._labels,
-            self._warmpool,
+            self._pod_labels,
             self._owns_lifecycle,
         )
 
@@ -397,6 +448,16 @@ class KubernetesSandbox(BaseSandbox):
             k8s_agent_sandbox.exceptions.SandboxNotFoundError:
                 If ``claim_name`` was specified but no matching
                 ``SandboxClaim`` exists in the cluster.
+            k8s_agent_sandbox.exceptions.SandboxWarmPoolNotFoundError:
+                If ``warmpool_name`` does not name an existing
+                ``SandboxWarmPool`` in ``namespace``.
+            k8s_agent_sandbox.exceptions.SandboxTemplateNotFoundError:
+                If the warm pool references a missing ``SandboxTemplate``.
+            k8s_agent_sandbox.exceptions.SandboxClaimFailedError:
+                If the claim reaches a terminal failure the controller will
+                not recover from (e.g. rejected pod metadata, invalid
+                volume claim templates).  These surface quickly rather
+                than burning the full ready timeout.
             kubernetes.client.ApiException:
                 On Kubernetes API errors (e.g. RBAC, namespace not found).
         """
@@ -996,16 +1057,22 @@ class KubernetesSandbox(BaseSandbox):
                 )
                 logger.info("Sandbox reconnected: %s (claim=%s)", self.id, self._claim_name)
             else:
-                assert self._template_name is not None  # validated in __init__
+                assert self._warmpool_name is not None  # validated in __init__
                 create_kwargs: dict[str, Any] = {
-                    "template": self._template_name,
+                    "warmpool": self._warmpool_name,
                     "namespace": self._namespace,
                     "labels": self._labels,
                 }
+                # Optional kwargs are forwarded only when set, so the call
+                # site stays readable and each one is individually assertable.
                 if self._shutdown_after_seconds is not None:
                     create_kwargs["shutdown_after_seconds"] = self._shutdown_after_seconds
-                if self._warmpool is not None:
-                    create_kwargs["warmpool"] = self._warmpool
+                if self._volume_claim_templates is not None:
+                    create_kwargs["volume_claim_templates"] = self._volume_claim_templates
+                if self._pod_labels is not None:
+                    create_kwargs["pod_labels"] = self._pod_labels
+                if self._pod_annotations is not None:
+                    create_kwargs["pod_annotations"] = self._pod_annotations
                 self._sandbox = self._client.create_sandbox(**create_kwargs)
                 logger.info("Sandbox started: %s", self.id)
             self._started = True
@@ -1086,6 +1153,7 @@ class KubernetesSandbox(BaseSandbox):
         else:
             resolved_config = SandboxLocalTunnelConnectionConfig(
                 server_port=self._server_port,
+                router_namespace=self._router_namespace,
             )
 
         logger.debug("_create_client: connection_config=%s", resolved_config)
@@ -1096,10 +1164,13 @@ def create_kubernetes_sandbox(
     *,
     client: SandboxClient,
     claim_name: str,
-    template_name: str,
+    warmpool_name: str,
     namespace: str = "default",
     labels: dict[str, str] | None = None,
-    warmpool: str | None = None,
+    pod_labels: dict[str, str] | None = None,
+    pod_annotations: dict[str, str] | None = None,
+    volume_claim_templates: list[dict[str, Any]] | None = None,
+    shutdown_after_seconds: int | None = None,
     sandbox_ready_timeout: int = 180,
     **kwargs: Any,
 ) -> KubernetesSandbox:
@@ -1108,7 +1179,7 @@ def create_kubernetes_sandbox(
     Encapsulates the get-or-create pattern recommended by the LangChain
     Deep Agents production guide.  If a sandbox with the given
     ``claim_name`` already exists it is reused; otherwise a new one is
-    created from ``template_name``.
+    claimed from ``warmpool_name``.
 
     The ``claim_name`` is used as the Kubernetes ``SandboxClaim`` resource
     name, making lookups deterministic.  This is necessary because the
@@ -1131,7 +1202,7 @@ def create_kubernetes_sandbox(
             backend = create_kubernetes_sandbox(
                 client=client,
                 claim_name=f"sandbox-{thread_id}",
-                template_name="python-sandbox-template",
+                warmpool_name="python-sandbox-pool",
                 namespace="agent-sandbox-system",
                 labels={"thread_id": thread_id},
             )
@@ -1143,18 +1214,33 @@ def create_kubernetes_sandbox(
         claim_name: Kubernetes ``SandboxClaim`` resource name to look up
             or create.  Must be a valid DNS subdomain name (lowercase
             letters, digits, and hyphens; max 63 characters).
-        template_name: ``SandboxTemplate`` CRD name used when creating a
-            new sandbox.
+        warmpool_name: ``SandboxWarmPool`` CRD name the new claim points
+            at.  Ignored when reconnecting to an existing claim.
         namespace: Kubernetes namespace for the sandbox resources.
-        labels: Labels applied to the ``SandboxClaim`` at creation time.
-            Ignored when reconnecting to an existing sandbox.
-        warmpool: Name of a ``SandboxWarmPool`` resource to adopt a
-            pre-provisioned sandbox from.  Ignored when reconnecting.
+        labels: Labels applied to the ``SandboxClaim`` object at creation
+            time.  Ignored when reconnecting to an existing sandbox.
+        pod_labels: Labels stamped onto the sandbox **Pod** via
+            ``spec.additionalPodMetadata``.  Ignored when reconnecting.
+        pod_annotations: Annotations stamped onto the sandbox **Pod** via
+            ``spec.additionalPodMetadata``.  Ignored when reconnecting.
+        volume_claim_templates: ``PersistentVolumeClaim`` template
+            fragments for durable sandbox storage.  Requires a matching
+            ``volumeMounts`` entry in the ``SandboxTemplate``.  Ignored
+            when reconnecting.
+        shutdown_after_seconds: TTL in seconds after which the controller
+            deletes the ``SandboxClaim``.  Ignored when reconnecting.
         sandbox_ready_timeout: Maximum seconds to wait for a newly created
             sandbox to become ready.  Defaults to 180.
         **kwargs: Additional keyword arguments forwarded to the
             :class:`KubernetesSandbox` constructor (e.g.
             ``allow_prefixes``, ``virtual_mode``, ``root_dir``).
+
+            .. important::
+               Creation-time constructor arguments have no effect here.
+               This factory always returns a backend in handle mode, so
+               ``KubernetesSandbox`` never runs its own create path.  Every
+               parameter that must reach the cluster is therefore declared
+               explicitly above rather than left to ``**kwargs``.
 
     Returns:
         A :class:`KubernetesSandbox` wrapping the resolved or newly
@@ -1164,30 +1250,35 @@ def create_kubernetes_sandbox(
 
     Raises:
         kubernetes.client.ApiException: On Kubernetes API errors
-            (e.g. RBAC, namespace not found, template missing).
+            (e.g. RBAC, namespace not found).
+        k8s_agent_sandbox.exceptions.SandboxWarmPoolNotFoundError:
+            If ``warmpool_name`` does not name an existing
+            ``SandboxWarmPool`` in ``namespace``.
+        k8s_agent_sandbox.exceptions.SandboxTemplateNotFoundError:
+            If the warm pool references a missing ``SandboxTemplate``.
+        k8s_agent_sandbox.exceptions.SandboxClaimFailedError:
+            If the claim reaches a terminal failure the controller will
+            not recover from.
         TimeoutError: If the newly created sandbox does not become
             ready within *sandbox_ready_timeout* seconds.
+
+    In every failure case above, a claim this call created is deleted
+    before the exception propagates, so a retry starts from a clean slate.
     """
     from k8s_agent_sandbox.exceptions import SandboxNotFoundError as _SandboxNotFoundError
+    from k8s_agent_sandbox.pod_metadata import build_pod_metadata as _build_pod_metadata
+    from k8s_agent_sandbox.utils import (
+        construct_sandbox_claim_lifecycle_spec as _lifecycle_spec,
+    )
     from kubernetes import client as _k8s_client
 
-    # Fast check: does the SandboxClaim resource exist?  A direct GET
+    # Fast check: does the SandboxClaim resource exist?  A plain GET
     # returns immediately (~20 ms) instead of the 30 s watch timeout
     # that client.get_sandbox() uses internally via resolve_sandbox_name.
-    _claim_exists = True
-    try:
-        client.k8s_helper.custom_objects_api.get_namespaced_custom_object(
-            group="extensions.agents.x-k8s.io",
-            version="v1alpha1",
-            namespace=namespace,
-            plural="sandboxclaims",
-            name=claim_name,
-        )
-    except _k8s_client.ApiException as _exc:
-        if _exc.status == 404:
-            _claim_exists = False
-        else:
-            raise
+    # get_sandbox_claim() returns None on 404 and re-raises anything else,
+    # and owns the API group/version, so no CRD coordinates are hardcoded
+    # here (they moved from v1alpha1 to v1beta1 in agent-sandbox v0.5.0).
+    _claim_exists = client.k8s_helper.get_sandbox_claim(claim_name, namespace) is not None
 
     if _claim_exists:
         try:
@@ -1204,37 +1295,48 @@ def create_kubernetes_sandbox(
         # Handle 409 Conflict for concurrent callers: if another process
         # created the claim between our GET and this POST, fall back to
         # attaching to the existing claim.
-        _we_created = False
+        created_claim: Any = None
         try:
             create_claim_kwargs: dict[str, Any] = {}
             if labels is not None:
                 create_claim_kwargs["labels"] = labels
-            if warmpool is not None:
-                create_claim_kwargs["warmpool"] = warmpool
-            client.k8s_helper.create_sandbox_claim(
+            if volume_claim_templates is not None:
+                create_claim_kwargs["volume_claim_templates"] = volume_claim_templates
+            if shutdown_after_seconds is not None:
+                create_claim_kwargs["lifecycle"] = _lifecycle_spec(shutdown_after_seconds)
+            # Reuse the SDK's own builder so both creation paths apply
+            # identical client-side label validation.
+            pod_metadata = _build_pod_metadata(pod_labels, pod_annotations)
+            if pod_metadata is not None:
+                create_claim_kwargs["pod_metadata"] = pod_metadata
+            created_claim = client.k8s_helper.create_sandbox_claim(
                 claim_name,
-                template_name,
+                warmpool_name,
                 namespace,
                 **create_claim_kwargs,
             )
-            _we_created = True
         except _k8s_client.ApiException as _exc:
             if _exc.status != 409:
                 raise
 
-        if _we_created:
+        if created_claim is not None:
+            # A single watch on the claim: its status carries both the bound
+            # sandbox name and the forwarded Ready condition, so there is no
+            # need to watch the Sandbox resource separately.  Seeding the
+            # watch with the create response's resourceVersion lets the
+            # apiserver serve it from the watch cache.
+            resource_version = None
+            if isinstance(created_claim, dict):
+                resource_version = (created_claim.get("metadata") or {}).get("resourceVersion")
             try:
-                sandbox_id = client.k8s_helper.resolve_sandbox_name(
+                client.k8s_helper.wait_for_claim_ready(
                     claim_name,
                     namespace,
                     timeout=sandbox_ready_timeout,
-                )
-                client.k8s_helper.wait_for_sandbox_ready(
-                    sandbox_id,
-                    namespace,
-                    timeout=sandbox_ready_timeout,
+                    resource_version=resource_version,
                 )
             except Exception:
+                logger.warning("SandboxClaim %s did not become ready — rolling it back", claim_name)
                 client.k8s_helper.delete_sandbox_claim(claim_name, namespace)
                 raise
 

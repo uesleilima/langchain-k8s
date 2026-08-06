@@ -35,7 +35,7 @@ def _run_agent(
 
     with patch("k8s_agent_sandbox.SandboxClient", return_value=mock_client):
         backend = KubernetesSandbox(
-            template_name="test-tpl",
+            warmpool_name="test-tpl",
             namespace="test-ns",
         )
 
@@ -231,7 +231,7 @@ class TestDeepAgentLifecycle:
 
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             backend = KubernetesSandbox(
-                template_name="test-tpl",
+                warmpool_name="test-tpl",
                 namespace="test-ns",
             )
 

@@ -31,7 +31,7 @@ from tests.conftest import FakeToolModel
 
 pytestmark = pytest.mark.integration
 
-TEMPLATE = "python-sandbox-template"
+WARMPOOL = "python-sandbox-pool"
 NAMESPACE = "agent-sandbox-system"
 
 
@@ -69,7 +69,7 @@ class TestCreateDeepAgent:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_deep_agent(model=model, backend=backend)
@@ -99,7 +99,7 @@ class TestCreateDeepAgent:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_deep_agent(model=model, backend=backend)
@@ -140,7 +140,7 @@ class TestCreateDeepAgent:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_deep_agent(model=model, backend=backend)
@@ -170,7 +170,7 @@ class TestCreateDeepAgent:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_deep_agent(model=model, backend=backend)
@@ -182,7 +182,7 @@ class TestCreateDeepAgent:
     def test_deep_agent_lazy_init(self) -> None:
         """Deep agent lazily starts the sandbox on first tool call."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
         assert not backend._started
@@ -221,7 +221,7 @@ class TestCreateDeepAgent:
         )
 
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
 
@@ -234,7 +234,7 @@ class TestCreateDeepAgent:
     def test_deep_agent_multiple_invocations_reuse(self) -> None:
         """Multiple deep-agent invocations on the same backend reuse the pod."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         )
@@ -288,7 +288,7 @@ class TestCreateDeepAgent:
     def test_deep_agent_stop_and_reinvoke(self) -> None:
         """Stopping and re-invoking a deep agent gets a fresh pod."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         )
@@ -366,7 +366,7 @@ class TestCreateDeepAgent:
                 )
 
                 with KubernetesSandbox(
-                    template_name=TEMPLATE,
+                    warmpool_name=WARMPOOL,
                     namespace=NAMESPACE,
                 ) as backend:
                     agent = create_deep_agent(model=model, backend=backend)
@@ -402,7 +402,7 @@ class TestDeepAgentReconnect:
         """Agent writes a file, process restarts, reconnects, reads file back."""
         # Phase 1: create sandbox, run agent that writes a marker file
         backend_1 = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             skip_cleanup=True,
         )
@@ -431,7 +431,7 @@ class TestDeepAgentReconnect:
         # Phase 2: reconnect and verify the file is still there
         try:
             backend_2 = KubernetesSandbox(
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 claim_name=saved_claim,
             )
@@ -465,7 +465,7 @@ class TestDeepAgentReconnect:
         """Reconnected agent performs multi-step work on the existing pod."""
         # Phase 1: create sandbox and write initial state
         backend_1 = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             skip_cleanup=True,
         )
@@ -493,7 +493,7 @@ class TestDeepAgentReconnect:
         # Phase 2: reconnect and do a multi-step append + read
         try:
             backend_2 = KubernetesSandbox(
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 claim_name=saved_claim,
             )
@@ -558,7 +558,7 @@ class TestDeepAgentLabels:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             labels={"agent": "deep-test", "env": "integration"},
         ) as backend:
@@ -572,7 +572,7 @@ class TestDeepAgentLabels:
     def test_deep_agent_labels_with_skip_cleanup(self) -> None:
         """Labeled sandbox with skip_cleanup preserves claim for later reconnect."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             labels={"session": "deep-label-test"},
             skip_cleanup=True,
@@ -602,7 +602,7 @@ class TestDeepAgentLabels:
         # Reconnect to the labeled sandbox
         try:
             backend_2 = KubernetesSandbox(
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 claim_name=saved_claim,
             )
@@ -639,7 +639,7 @@ class TestDeepAgentClaimName:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_deep_agent(model=model, backend=backend)
@@ -651,7 +651,7 @@ class TestDeepAgentClaimName:
     def test_claim_name_none_before_start(self) -> None:
         """claim_name is None before any agent invocation starts the sandbox."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
         assert backend.claim_name is None
@@ -686,7 +686,7 @@ class TestDeepAgentThreadScoped:
             backend = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 labels={"thread_id": "t-exec"},
             )
@@ -738,7 +738,7 @@ class TestDeepAgentThreadScoped:
             backend_1 = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 labels={"thread_id": thread_id},
             )
@@ -765,7 +765,7 @@ class TestDeepAgentThreadScoped:
             backend_2 = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 labels={"thread_id": thread_id},
             )
@@ -802,7 +802,7 @@ class TestDeepAgentThreadScoped:
             backend = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
             )
             model = FakeToolModel(
@@ -853,7 +853,7 @@ class TestDeepAgentThreadScoped:
                 backend = create_kubernetes_sandbox(
                     client=client,
                     claim_name=claims[idx],
-                    template_name=TEMPLATE,
+                    warmpool_name=WARMPOOL,
                     namespace=NAMESPACE,
                     labels={"thread_id": f"parallel-{idx}"},
                 )
@@ -918,7 +918,7 @@ class TestDeepAgentThreadScoped:
             backend = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 allow_prefixes=["/tmp/"],
                 virtual_mode=True,

@@ -31,7 +31,7 @@ from tests.conftest import FakeToolModel
 
 pytestmark = pytest.mark.integration
 
-TEMPLATE = "python-sandbox-template"
+WARMPOOL = "python-sandbox-pool"
 NAMESPACE = "agent-sandbox-system"
 
 
@@ -63,7 +63,7 @@ class TestDeepAgentExecute:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_agent(
@@ -99,7 +99,7 @@ class TestDeepAgentExecute:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_agent(
@@ -133,7 +133,7 @@ class TestDeepAgentExecute:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_agent(
@@ -180,7 +180,7 @@ class TestDeepAgentExecute:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_agent(
@@ -234,7 +234,7 @@ class TestDeepAgentFileOps:
         )
 
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as backend:
             agent = create_agent(
@@ -262,7 +262,7 @@ class TestDeepAgentLifecycle:
         )
 
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
 
@@ -295,7 +295,7 @@ class TestDeepAgentLifecycle:
         )
 
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
         assert not backend._started
@@ -318,7 +318,7 @@ class TestDeepAgentLifecycle:
         State written by the first invocation is visible to the second.
         """
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         )
@@ -380,7 +380,7 @@ class TestDeepAgentLifecycle:
     def test_multiple_invocations_no_tool_then_tool(self) -> None:
         """First invoke has no tool calls (sandbox stays idle), second invoke triggers lazy start."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
 
@@ -429,7 +429,7 @@ class TestDeepAgentLifecycle:
     def test_eager_start_then_agent_invoke(self) -> None:
         """Explicit start() before agent.invoke() — agent reuses the pre-warmed pod."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         )
         backend.start()
@@ -468,7 +468,7 @@ class TestDeepAgentLifecycle:
     def test_shared_backend_across_parallel_agents(self) -> None:
         """Two agents sharing the same backend invoke concurrently — same pod."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         )
@@ -557,7 +557,7 @@ class TestDeepAgentLifecycle:
                 )
 
                 with KubernetesSandbox(
-                    template_name=TEMPLATE,
+                    warmpool_name=WARMPOOL,
                     namespace=NAMESPACE,
                 ) as backend:
                     agent = create_agent(
@@ -589,7 +589,7 @@ class TestDeepAgentLifecycle:
     def test_stop_and_reinvoke_creates_new_pod(self) -> None:
         """Stopping a backend and invoking again creates a fresh pod."""
         backend = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         )

@@ -23,7 +23,7 @@ def _make_sandbox(**overrides: object) -> tuple[KubernetesSandbox, MagicMock, Ma
     """
     mock_client = make_mock_client()
     defaults = {
-        "template_name": "test-tpl",
+        "warmpool_name": "test-pool",
         "namespace": "test-ns",
     }
     defaults.update(overrides)  # type: ignore[arg-type]
@@ -46,7 +46,7 @@ class TestConstruction:
 
     def test_stores_config(self) -> None:
         sb, _, _ = _make_sandbox(
-            template_name="my-tpl",
+            warmpool_name="my-tpl",
             namespace="my-ns",
             api_url="http://localhost:8080",
             server_port=9999,
@@ -54,7 +54,7 @@ class TestConstruction:
             max_output_size=512,
             command_timeout=30,
         )
-        assert sb._template_name == "my-tpl"
+        assert sb._warmpool_name == "my-tpl"
         assert sb._namespace == "my-ns"
         assert sb._api_url == "http://localhost:8080"
         assert sb._server_port == 9999
@@ -78,7 +78,7 @@ class TestId:
     def test_id_after_start_returns_claim_name(self) -> None:
         mock = make_mock_client(claim_name="my-claim-123")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             assert sb.id == "my-claim-123"
             sb.stop()
@@ -99,7 +99,7 @@ class TestLifecycle:
     def test_start_creates_client(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             assert sb._started
             assert sb._sandbox is not None
@@ -109,7 +109,7 @@ class TestLifecycle:
     def test_start_is_idempotent(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             sb.start()  # second call should be no-op
             mock.create_sandbox.assert_called_once()
@@ -118,7 +118,7 @@ class TestLifecycle:
     def test_stop_destroys_sandbox(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             sb.stop()
             assert not sb._started
@@ -128,7 +128,7 @@ class TestLifecycle:
     def test_stop_is_idempotent(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             sb.stop()
             sb.stop()  # no error on second call
@@ -137,7 +137,7 @@ class TestLifecycle:
     def test_context_manager(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            with KubernetesSandbox(template_name="t", namespace="n") as sb:
+            with KubernetesSandbox(warmpool_name="t", namespace="n") as sb:
                 assert sb._started
             assert not sb._started
             mock.create_sandbox.assert_called_once()
@@ -147,7 +147,7 @@ class TestLifecycle:
         mock = make_mock_client()
         mock.delete_sandbox.side_effect = RuntimeError("cleanup boom")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             sb.stop()  # should not raise
             assert not sb._started
@@ -162,7 +162,7 @@ class TestExecute:
     def test_basic_execute(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="hello\n", exit_code=0))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             resp = sb.execute("echo hello")
             assert isinstance(resp, ExecuteResponse)
             assert resp.output == "hello\n"
@@ -173,7 +173,7 @@ class TestExecute:
     def test_execute_combines_stdout_stderr(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="out", stderr="err", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             resp = sb.execute("bad-cmd")
             assert "out" in resp.output
             assert "err" in resp.output
@@ -183,7 +183,7 @@ class TestExecute:
     def test_execute_only_stderr(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="", stderr="error msg", exit_code=2))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             resp = sb.execute("fail")
             assert resp.output == "error msg"
             sb.stop()
@@ -192,7 +192,7 @@ class TestExecute:
         big_output = "x" * 2000
         mock = make_mock_client(run_result=FakeExecutionResult(stdout=big_output, exit_code=0))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", max_output_size=100)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", max_output_size=100)
             resp = sb.execute("big")
             assert resp.truncated is True
             assert len(resp.output) == 100
@@ -201,7 +201,7 @@ class TestExecute:
     def test_execute_no_truncation_when_under_limit(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="short", exit_code=0))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", max_output_size=100)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", max_output_size=100)
             resp = sb.execute("short")
             assert resp.truncated is False
             sb.stop()
@@ -209,7 +209,7 @@ class TestExecute:
     def test_execute_lazy_starts_sandbox(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             assert not sb._started
             sb.execute("echo lazy")
             assert sb._started
@@ -219,7 +219,7 @@ class TestExecute:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", command_timeout=42)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", command_timeout=42)
             sb.execute("echo hi")
             handle.commands.run.assert_called_once_with("sh -c 'echo hi'", timeout=42)
             sb.stop()
@@ -245,7 +245,7 @@ class TestAutoReconnect:
 
         handle.commands.run = flaky_run
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", reuse_sandbox=True)
             resp = sb.execute("cmd")
             assert resp.output == "recovered"
             sb.stop()
@@ -255,7 +255,7 @@ class TestAutoReconnect:
         handle = mock._mock_sandbox_handle
         handle.commands.run.side_effect = ConnectionError("sandbox died")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=False)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", reuse_sandbox=False)
             with pytest.raises(ConnectionError, match="sandbox died"):
                 sb.execute("cmd")
             sb.stop()
@@ -271,7 +271,7 @@ class TestUploadFiles:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.upload_files([("/tmp/hello.txt", b"world")])
             assert len(results) == 1
             assert results[0].path == "/tmp/hello.txt"
@@ -285,7 +285,7 @@ class TestUploadFiles:
     def test_upload_multiple_files(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             files = [
                 ("/a.txt", b"aaa"),
                 ("/b.txt", b"bbb"),
@@ -299,7 +299,7 @@ class TestUploadFiles:
     def test_upload_invalid_path(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.upload_files([("relative/path.txt", b"data")])
             assert results[0].error == "invalid_path"
             # run() should not have been called for the file (only for lazy init)
@@ -308,7 +308,7 @@ class TestUploadFiles:
     def test_upload_empty_path(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.upload_files([("", b"data")])
             assert results[0].error == "invalid_path"
             sb.stop()
@@ -316,7 +316,7 @@ class TestUploadFiles:
     def test_upload_permission_denied(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stderr="sh: Permission denied", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.upload_files([("/root/secret.txt", b"data")])
             assert results[0].error == "permission_denied"
             sb.stop()
@@ -324,7 +324,7 @@ class TestUploadFiles:
     def test_upload_is_directory(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stderr="Is a directory", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.upload_files([("/tmp/", b"data")])
             assert results[0].error == "is_directory"
             sb.stop()
@@ -344,7 +344,7 @@ class TestUploadFiles:
 
         handle.commands.run = run_effect
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.upload_files([("/a.txt", b"ok"), ("/b.txt", b"fail")])
             assert results[0].error is None
             assert results[1].error == "permission_denied"
@@ -363,7 +363,7 @@ class TestDownloadFiles:
         encoded = b64.b64encode(b"file content here").decode("ascii")
         mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["/tmp/test.txt"])
             assert len(results) == 1
             assert results[0].path == "/tmp/test.txt"
@@ -379,7 +379,7 @@ class TestDownloadFiles:
             )
         )
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["/nonexistent.txt"])
             assert results[0].content is None
             assert results[0].error == "file_not_found"
@@ -393,7 +393,7 @@ class TestDownloadFiles:
             )
         )
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["/root/secret"])
             assert results[0].error == "permission_denied"
             sb.stop()
@@ -406,7 +406,7 @@ class TestDownloadFiles:
             )
         )
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["/tmp/"])
             assert results[0].error == "is_directory"
             sb.stop()
@@ -414,7 +414,7 @@ class TestDownloadFiles:
     def test_download_invalid_path(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["relative.txt"])
             assert results[0].error == "invalid_path"
             assert results[0].content is None
@@ -436,7 +436,7 @@ class TestDownloadFiles:
         handle = mock._mock_sandbox_handle
         handle.commands.run = run_effect
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["/a.txt", "/b.txt"])
             assert results[0].content == b"aaa"
             assert results[1].content == b"bbb"
@@ -458,7 +458,7 @@ class TestDownloadFiles:
         handle = mock._mock_sandbox_handle
         handle.commands.run = run_effect
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             results = sb.download_files(["/a.txt", "/missing.txt"])
             assert results[0].error is None
             assert results[1].error == "file_not_found"
@@ -474,7 +474,7 @@ class TestReuseSandbox:
     def test_reuse_true_keeps_same_client(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", reuse_sandbox=True)
             sb.execute("echo 1")
             client_after_first = sb._client
             sb.execute("echo 2")
@@ -484,7 +484,7 @@ class TestReuseSandbox:
     def test_reuse_false_can_restart(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", reuse_sandbox=False)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", reuse_sandbox=False)
             sb.start()
             sb.stop()
             sb.start()  # should work fine after stop
@@ -511,7 +511,7 @@ class TestThreadSafety:
         mock.create_sandbox = counting_enter
 
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             errors: list[Exception] = []
 
             def worker() -> None:
@@ -544,7 +544,7 @@ class TestThreadSafety:
         handle.commands.run = counting_run
 
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             r1 = sb.execute("echo 1")
             r2 = sb.execute("echo 2")
             r3 = sb.execute("echo 3")
@@ -573,7 +573,7 @@ class TestThreadSafety:
         mock.create_sandbox = counting_enter
 
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             errors: list[Exception] = []
 
             def exec_worker() -> None:
@@ -615,7 +615,7 @@ class TestThreadSafety:
         """Multiple threads calling stop() concurrently doesn't double-destroy."""
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             errors: list[Exception] = []
 
@@ -646,7 +646,7 @@ class TestClientCreation:
         with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
             sb = KubernetesSandbox(
-                template_name="tpl",
+                warmpool_name="tpl",
                 namespace="ns",
                 gateway_name="my-gw",
                 gateway_namespace="gw-ns",
@@ -662,7 +662,7 @@ class TestClientCreation:
         with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
             sb = KubernetesSandbox(
-                template_name="tpl",
+                warmpool_name="tpl",
                 namespace="ns",
                 api_url="http://localhost:8080",
             )
@@ -676,7 +676,7 @@ class TestClientCreation:
         with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
             sb = KubernetesSandbox(
-                template_name="tpl",
+                warmpool_name="tpl",
                 namespace="ns",
                 server_port=9999,
             )
@@ -700,7 +700,7 @@ class TestAllowPrefixes:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.write("/etc/test.txt", "content")
             handle.commands.run.assert_called()
             sb.stop()
@@ -716,7 +716,7 @@ class TestAllowPrefixes:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace/"])
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", allow_prefixes=["/workspace/"])
             sb.write("/workspace/main.py", "print('hi')")
             handle.commands.run.assert_called()
             sb.stop()
@@ -725,7 +725,7 @@ class TestAllowPrefixes:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace/", "/tmp/"])
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", allow_prefixes=["/workspace/", "/tmp/"])
             sb.write("/workspace/main.py", "content")
             handle.commands.run.assert_called()
             handle.commands.run.reset_mock()
@@ -749,7 +749,7 @@ class TestAllowPrefixes:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="1", exit_code=0))
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace/"])
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", allow_prefixes=["/workspace/"])
             sb.edit("/workspace/test.txt", "old", "new")
             handle.commands.run.assert_called()
             sb.stop()
@@ -758,7 +758,7 @@ class TestAllowPrefixes:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", allow_prefixes=["/workspace"])
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", allow_prefixes=["/workspace"])
             # "/workspace" should be normalized to "/workspace/".
             sb.write("/workspace/file.txt", "data")
             handle.commands.run.assert_called()
@@ -829,7 +829,7 @@ class TestVirtualMode:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="     1\tline1", exit_code=0))
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.read("/src/main.py")
             cmd = handle.commands.run.call_args[0][0]
             # deepagents 0.5.x base64-encodes paths in shell commands
@@ -849,7 +849,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.write("/src/main.py", "print('hi')")
             # write() resolves the path then delegates to upload_files via super().
             # The shell command should contain the resolved path exactly once.
@@ -874,7 +874,7 @@ class TestVirtualMode:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout="1", exit_code=0))
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.edit("/src/main.py", "old", "new")
             # edit() sends a base64-encoded JSON payload via stdin heredoc.
             cmd = handle.commands.run.call_args[0][0]
@@ -897,7 +897,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.ls("/src")
             cmd = handle.commands.run.call_args[0][0]
             encoded_path = b64.b64encode(b"/workspace/src").decode()
@@ -918,7 +918,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.glob("*.py", "/src")
             # glob uses base64-encoded path — verify the call was made with
             # the resolved path by checking the base64-encoded value in the command.
@@ -940,7 +940,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.grep("TODO", "/src")
             cmd = handle.commands.run.call_args[0][0]
             assert "/workspace/src" in cmd
@@ -950,7 +950,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             sb.grep("TODO")
             cmd = handle.commands.run.call_args[0][0]
             assert "/workspace" in cmd
@@ -961,7 +961,7 @@ class TestVirtualMode:
         # grep with traversal path should return GrepResult with error.
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb2 = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb2 = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             result = sb2.grep("TODO", "../../etc")
             assert result.error is not None
             assert "Path traversal not allowed" in result.error
@@ -973,7 +973,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             results = sb.upload_files([("/src/test.txt", b"data")])
             assert results[0].error is None
             cmd = handle.commands.run.call_args[0][0]
@@ -983,7 +983,7 @@ class TestVirtualMode:
     def test_upload_blocks_traversal(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             results = sb.upload_files([("../../etc/passwd", b"bad")])
             assert results[0].error == "invalid_path"
             sb.stop()
@@ -992,7 +992,7 @@ class TestVirtualMode:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True)
             results = sb.upload_files([("/src/test.txt", b"data")])
             assert results[0].error is None
             # Upload should use run() (shell), not client.write().
@@ -1011,7 +1011,7 @@ class TestVirtualMode:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=False)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=False)
             results = sb.download_files(["/tmp/test.txt"])
             assert results[0].content == b"shell content"
             # Verify shell command was used (via run).
@@ -1031,7 +1031,7 @@ class TestVirtualMode:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             results = sb.download_files(["/src/test.txt"])
             assert results[0].content == b"shell content"
             assert results[0].error is None
@@ -1044,7 +1044,7 @@ class TestVirtualMode:
     def test_download_file_not_found_virtual_mode(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stderr="No such file or directory", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["/missing.txt"])
             assert results[0].content is None
             assert results[0].error == "file_not_found"
@@ -1053,7 +1053,7 @@ class TestVirtualMode:
     def test_download_permission_denied_virtual_mode(self) -> None:
         mock = make_mock_client(run_result=FakeExecutionResult(stderr="Permission denied", exit_code=1))
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["/secret.txt"])
             assert results[0].content is None
             assert results[0].error == "permission_denied"
@@ -1066,7 +1066,7 @@ class TestVirtualMode:
         mock = make_mock_client(run_result=FakeExecutionResult(stdout=encoded + "\n", exit_code=0))
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["relative.txt"])
             # In virtual mode, relative paths get "/" prepended, resolving to
             # /tmp/relative.txt which is a valid absolute path.
@@ -1079,7 +1079,7 @@ class TestVirtualMode:
     def test_download_blocks_traversal_virtual_mode(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True, root_dir="/workspace")
             results = sb.download_files(["../../etc/passwd"])
             assert results[0].error == "invalid_path"
             assert results[0].content is None
@@ -1101,7 +1101,7 @@ class TestVirtualMode:
         handle = mock._mock_sandbox_handle
         handle.commands.run = run_effect
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", virtual_mode=True)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", virtual_mode=True)
             results = sb.download_files(["/a.txt", "/b.txt"])
             assert results[0].content == b"content-1"
             assert results[1].content == b"content-2"
@@ -1115,7 +1115,7 @@ class TestVirtualMode:
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 virtual_mode=True,
                 root_dir="/workspace",
@@ -1156,7 +1156,7 @@ class TestSkipCleanup:
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 skip_cleanup=True,
             )
@@ -1173,7 +1173,7 @@ class TestSkipCleanup:
         mock = make_mock_client(claim_name="delete-me")
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             sb.stop()
 
@@ -1188,7 +1188,7 @@ class TestSkipCleanup:
         with (
             patch("k8s_agent_sandbox.SandboxClient", return_value=mock),
             KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 skip_cleanup=True,
             ) as sb,
@@ -1204,7 +1204,7 @@ class TestSkipCleanup:
         handle.close_connection.side_effect = RuntimeError("cleanup boom")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 skip_cleanup=True,
             )
@@ -1226,7 +1226,7 @@ class TestClaimName:
     def test_claim_name_returns_handle_value_after_start(self) -> None:
         mock = make_mock_client(claim_name="sandbox-claim-abc123")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             assert sb.claim_name == "sandbox-claim-abc123"
             sb.stop()
@@ -1235,7 +1235,7 @@ class TestClaimName:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="pre-existing-claim",
             )
@@ -1246,7 +1246,7 @@ class TestClaimName:
         mock = make_mock_client(claim_name="live-claim")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="reconnect-claim",
             )
@@ -1257,7 +1257,7 @@ class TestClaimName:
     def test_claim_name_is_none_after_stop(self) -> None:
         mock = make_mock_client(claim_name="ephemeral-claim")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
             sb.stop()
             # No live handle, no constructor claim_name → None.
@@ -1275,7 +1275,7 @@ class TestReconnect:
         mock = make_mock_client(claim_name="existing-claim")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="existing-claim",
             )
@@ -1293,7 +1293,7 @@ class TestReconnect:
         mock = make_mock_client(claim_name="reattach-claim")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="reattach-claim",
             )
@@ -1308,7 +1308,7 @@ class TestReconnect:
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="persistent-claim",
                 skip_cleanup=True,
@@ -1325,7 +1325,7 @@ class TestReconnect:
         mock = make_mock_client(claim_name="my-claim-reconnect")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="my-claim-reconnect",
             )
@@ -1338,7 +1338,7 @@ class TestReconnect:
         """Without claim_name, start() calls create_sandbox (default path)."""
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
 
         mock.create_sandbox.assert_called_once()
@@ -1364,14 +1364,14 @@ class TestLabels:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 labels={"agent-id": "a1", "session": "s1"},
             )
             sb.start()
 
         mock.create_sandbox.assert_called_once_with(
-            template="t",
+            warmpool="t",
             namespace="n",
             labels={"agent-id": "a1", "session": "s1"},
         )
@@ -1380,11 +1380,11 @@ class TestLabels:
     def test_labels_none_passed_as_none(self) -> None:
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n")
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n")
             sb.start()
 
         mock.create_sandbox.assert_called_once_with(
-            template="t",
+            warmpool="t",
             namespace="n",
             labels=None,
         )
@@ -1395,7 +1395,7 @@ class TestLabels:
         mock = make_mock_client(claim_name="existing")
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
             sb = KubernetesSandbox(
-                template_name="t",
+                warmpool_name="t",
                 namespace="n",
                 claim_name="existing",
                 labels={"should": "be-ignored"},
@@ -1482,18 +1482,18 @@ class TestSandboxHandleConstructor:
         sb = KubernetesSandbox(sandbox=handle, namespace="n")
         assert sb._owns_lifecycle is False
 
-    def test_handle_template_name_not_required(self) -> None:
+    def test_handle_warmpool_name_not_required(self) -> None:
         handle = make_mock_client()._mock_sandbox_handle
         sb = KubernetesSandbox(sandbox=handle, namespace="n")
-        assert sb._template_name is None
+        assert sb._warmpool_name is None
 
     def test_rejects_sandbox_with_claim_name(self) -> None:
         handle = make_mock_client()._mock_sandbox_handle
         with pytest.raises(ValueError, match="Cannot specify both"):
             KubernetesSandbox(sandbox=handle, claim_name="conflict")
 
-    def test_rejects_no_sandbox_no_template(self) -> None:
-        with pytest.raises(ValueError, match="Either 'sandbox' or 'template_name'"):
+    def test_rejects_no_sandbox_no_warmpool(self) -> None:
+        with pytest.raises(ValueError, match="Either 'sandbox' or 'warmpool_name'"):
             KubernetesSandbox(namespace="n")
 
     def test_handle_with_enterprise_features(self) -> None:
@@ -1554,7 +1554,7 @@ class TestExecuteTimeout:
         mock = make_mock_client()
         handle = mock._mock_sandbox_handle
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="t", namespace="n", command_timeout=60)
+            sb = KubernetesSandbox(warmpool_name="t", namespace="n", command_timeout=60)
             sb.execute("echo hi", timeout=5)
             handle.commands.run.assert_called_once_with("sh -c 'echo hi'", timeout=5)
             sb.stop()
@@ -1572,7 +1572,7 @@ class TestCreateFactory:
         sb = create_kubernetes_sandbox(
             client=mock,
             claim_name="existing-claim",
-            template_name="tpl",
+            warmpool_name="tpl",
             namespace="ns",
         )
         mock.get_sandbox.assert_called_once_with(claim_name="existing-claim", namespace="ns")
@@ -1581,30 +1581,39 @@ class TestCreateFactory:
         assert sb.id == "existing-claim"
 
     def test_creates_when_not_found(self) -> None:
-        """Claim GET returns 404 -> creates claim directly."""
-        from kubernetes.client import ApiException
-
+        """Claim GET returns None -> creates claim directly."""
         mock = make_mock_client(claim_name="new-claim")
-        # Fast-check GET returns 404 (claim doesn't exist)
-        mock.k8s_helper.custom_objects_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        # Fast pre-flight GET finds nothing (claim doesn't exist)
+        mock.k8s_helper.get_sandbox_claim.return_value = None
         # get_sandbox called once after creation
         mock.get_sandbox.return_value = mock._mock_sandbox_handle
         sb = create_kubernetes_sandbox(
             client=mock,
             claim_name="new-claim",
-            template_name="tpl",
+            warmpool_name="pool",
             namespace="ns",
             labels={"thread_id": "t1"},
         )
-        # Should create claim with user-specified name (not auto-generated)
+        # Should create claim with user-specified name (not auto-generated),
+        # pointing at the warm pool.  Asserted by keyword so a rename of
+        # positional slot 2 cannot pass silently.
         mock.k8s_helper.create_sandbox_claim.assert_called_once_with(
             "new-claim",
-            "tpl",
+            "pool",
             "ns",
             labels={"thread_id": "t1"},
         )
-        mock.k8s_helper.resolve_sandbox_name.assert_called_once()
-        mock.k8s_helper.wait_for_sandbox_ready.assert_called_once()
+        assert mock.k8s_helper.create_sandbox_claim.call_args.args[1] == "pool"
+        # Single claim watch, seeded from the create response's resourceVersion
+        mock.k8s_helper.wait_for_claim_ready.assert_called_once_with(
+            "new-claim",
+            "ns",
+            timeout=180,
+            resource_version="42",
+        )
+        # The old two-watch resolve-then-wait pair must not be used
+        mock.k8s_helper.resolve_sandbox_name.assert_not_called()
+        mock.k8s_helper.wait_for_sandbox_ready.assert_not_called()
         # get_sandbox called only once (post-create), not for initial lookup
         assert mock.get_sandbox.call_count == 1
         # create_sandbox (auto-name) should NOT be called
@@ -1612,40 +1621,98 @@ class TestCreateFactory:
         assert sb._started
         assert sb._owns_lifecycle is False
 
-    def test_cleans_up_on_creation_failure(self) -> None:
-        """If sandbox creation fails after claim is created, the claim is deleted."""
+    def test_reuses_when_claim_get_returns_object(self) -> None:
+        """A non-None claim GET skips creation entirely."""
+        mock = make_mock_client(claim_name="existing-claim")
+        create_kubernetes_sandbox(
+            client=mock,
+            claim_name="existing-claim",
+            warmpool_name="pool",
+            namespace="ns",
+        )
+        mock.k8s_helper.get_sandbox_claim.assert_called_once_with("existing-claim", "ns")
+        mock.k8s_helper.create_sandbox_claim.assert_not_called()
+        mock.k8s_helper.wait_for_claim_ready.assert_not_called()
+
+    def test_claim_get_api_error_propagates(self) -> None:
+        """A non-404 error from the pre-flight GET is not swallowed."""
         from kubernetes.client import ApiException
 
         mock = make_mock_client()
-        # Fast-check GET returns 404 (claim doesn't exist)
-        mock.k8s_helper.custom_objects_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
-        mock.k8s_helper.resolve_sandbox_name.side_effect = TimeoutError("timed out")
+        mock.k8s_helper.get_sandbox_claim.side_effect = ApiException(status=403)
+        with pytest.raises(ApiException):
+            create_kubernetes_sandbox(
+                client=mock,
+                claim_name="claim",
+                warmpool_name="pool",
+                namespace="ns",
+            )
+        mock.k8s_helper.create_sandbox_claim.assert_not_called()
+
+    def test_cleans_up_on_creation_failure(self) -> None:
+        """If the claim never becomes ready, the claim is deleted."""
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        mock.k8s_helper.wait_for_claim_ready.side_effect = TimeoutError("timed out")
         with pytest.raises(TimeoutError, match="timed out"):
             create_kubernetes_sandbox(
                 client=mock,
                 claim_name="fail-claim",
-                template_name="tpl",
+                warmpool_name="pool",
                 namespace="ns",
             )
         # Claim should be cleaned up on failure
         mock.k8s_helper.delete_sandbox_claim.assert_called_once_with("fail-claim", "ns")
+
+    def test_rolls_back_on_missing_warmpool(self) -> None:
+        """A missing SandboxWarmPool propagates after the claim is rolled back."""
+        from k8s_agent_sandbox.exceptions import SandboxWarmPoolNotFoundError
+
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        mock.k8s_helper.wait_for_claim_ready.side_effect = SandboxWarmPoolNotFoundError("no pool")
+        with pytest.raises(SandboxWarmPoolNotFoundError):
+            create_kubernetes_sandbox(
+                client=mock,
+                claim_name="no-pool-claim",
+                warmpool_name="ghost-pool",
+                namespace="ns",
+            )
+        mock.k8s_helper.delete_sandbox_claim.assert_called_once_with("no-pool-claim", "ns")
+
+    def test_rolls_back_on_terminal_claim_failure(self) -> None:
+        """A terminally failed claim propagates after rollback."""
+        from k8s_agent_sandbox.exceptions import SandboxClaimFailedError
+
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        mock.k8s_helper.wait_for_claim_ready.side_effect = SandboxClaimFailedError("InvalidMetadata")
+        with pytest.raises(SandboxClaimFailedError):
+            create_kubernetes_sandbox(
+                client=mock,
+                claim_name="bad-claim",
+                warmpool_name="pool",
+                namespace="ns",
+            )
+        mock.k8s_helper.delete_sandbox_claim.assert_called_once_with("bad-claim", "ns")
 
     def test_handles_concurrent_409_conflict(self) -> None:
         """409 Conflict on create_sandbox_claim falls back to get_sandbox."""
         from kubernetes.client import ApiException
 
         mock = make_mock_client(claim_name="race-claim")
-        # Fast-check GET returns 404 (claim doesn't exist yet)
-        mock.k8s_helper.custom_objects_api.get_namespaced_custom_object.side_effect = ApiException(status=404)
+        # Fast pre-flight GET finds nothing (claim doesn't exist yet)
+        mock.k8s_helper.get_sandbox_claim.return_value = None
         # Another caller created the claim between our GET and POST
         mock.k8s_helper.create_sandbox_claim.side_effect = ApiException(status=409)
         sb = create_kubernetes_sandbox(
             client=mock,
             claim_name="race-claim",
-            template_name="tpl",
+            warmpool_name="pool",
             namespace="ns",
         )
-        # Should NOT resolve/wait (we didn't create the claim)
+        # Should NOT wait for readiness (we didn't create the claim)
+        mock.k8s_helper.wait_for_claim_ready.assert_not_called()
         mock.k8s_helper.resolve_sandbox_name.assert_not_called()
         mock.k8s_helper.wait_for_sandbox_ready.assert_not_called()
         # Should NOT clean up the other caller's claim
@@ -1654,13 +1721,82 @@ class TestCreateFactory:
         mock.get_sandbox.assert_called_once_with(claim_name="race-claim", namespace="ns")
         assert sb._started
 
+    def test_forwards_pod_metadata(self) -> None:
+        """pod_labels/pod_annotations become spec.additionalPodMetadata."""
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        create_kubernetes_sandbox(
+            client=mock,
+            claim_name="claim",
+            warmpool_name="pool",
+            namespace="ns",
+            pod_labels={"team": "platform"},
+            pod_annotations={"owner": "agents"},
+        )
+        call_kwargs = mock.k8s_helper.create_sandbox_claim.call_args.kwargs
+        assert call_kwargs["pod_metadata"] == {
+            "labels": {"team": "platform"},
+            "annotations": {"owner": "agents"},
+        }
+
+    def test_pod_metadata_omitted_when_unset(self) -> None:
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        create_kubernetes_sandbox(
+            client=mock,
+            claim_name="claim",
+            warmpool_name="pool",
+            namespace="ns",
+        )
+        assert "pod_metadata" not in mock.k8s_helper.create_sandbox_claim.call_args.kwargs
+
+    def test_forwards_volume_claim_templates(self) -> None:
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        vcts = [{"metadata": {"name": "workspace"}, "spec": {"resources": {"requests": {"storage": "1Gi"}}}}]
+        create_kubernetes_sandbox(
+            client=mock,
+            claim_name="claim",
+            warmpool_name="pool",
+            namespace="ns",
+            volume_claim_templates=vcts,
+        )
+        call_kwargs = mock.k8s_helper.create_sandbox_claim.call_args.kwargs
+        assert call_kwargs["volume_claim_templates"] == vcts
+
+    def test_volume_claim_templates_omitted_when_unset(self) -> None:
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        create_kubernetes_sandbox(
+            client=mock,
+            claim_name="claim",
+            warmpool_name="pool",
+            namespace="ns",
+        )
+        assert "volume_claim_templates" not in mock.k8s_helper.create_sandbox_claim.call_args.kwargs
+
+    def test_shutdown_after_seconds_becomes_lifecycle(self) -> None:
+        """shutdown_after_seconds reaches the claim rather than being dropped."""
+        mock = make_mock_client()
+        mock.k8s_helper.get_sandbox_claim.return_value = None
+        create_kubernetes_sandbox(
+            client=mock,
+            claim_name="claim",
+            warmpool_name="pool",
+            namespace="ns",
+            shutdown_after_seconds=600,
+        )
+        lifecycle = mock.k8s_helper.create_sandbox_claim.call_args.kwargs["lifecycle"]
+        assert lifecycle["shutdownPolicy"] == "Delete"
+        assert "shutdownTime" in lifecycle
+
     def test_forwards_kwargs(self) -> None:
         """Extra kwargs are forwarded to KubernetesSandbox."""
         mock = make_mock_client()
         sb = create_kubernetes_sandbox(
             client=mock,
             claim_name="claim",
-            template_name="tpl",
+            warmpool_name="pool",
             namespace="ns",
             allow_prefixes=["/workspace/"],
             virtual_mode=True,
@@ -1682,24 +1818,22 @@ class TestConnectionConfig:
         cfg = SandboxInClusterConnectionConfig()
         with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns", connection_config=cfg)
+            sb = KubernetesSandbox(warmpool_name="tpl", namespace="ns", connection_config=cfg)
             sb.start()
             MockClient.assert_called_once()
             assert MockClient.call_args[1]["connection_config"] is cfg
             sb.stop()
 
-    def test_in_cluster_use_pod_ip(self) -> None:
-        """SandboxInClusterConnectionConfig with use_pod_ip=True is forwarded."""
+    def test_in_cluster_config_has_no_use_pod_ip(self) -> None:
+        """The use_pod_ip flag is gone; pod IP is preferred automatically.
+
+        Pinned so that downgrading below k8s-agent-sandbox 0.5.2 — where the
+        flag still existed and defaulted to off — fails loudly here.
+        """
         from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 
-        cfg = SandboxInClusterConnectionConfig(use_pod_ip=True)
-        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
-            MockClient.return_value = make_mock_client()
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns", connection_config=cfg)
-            sb.start()
-            config = MockClient.call_args[1]["connection_config"]
-            assert config.use_pod_ip is True
-            sb.stop()
+        cfg = SandboxInClusterConnectionConfig()
+        assert not hasattr(cfg, "use_pod_ip")
 
     def test_connection_config_conflicts_with_api_url(self) -> None:
         from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
@@ -1707,7 +1841,7 @@ class TestConnectionConfig:
         cfg = SandboxInClusterConnectionConfig()
         with pytest.raises(ValueError, match="connection_config"):
             KubernetesSandbox(
-                template_name="tpl",
+                warmpool_name="tpl",
                 namespace="ns",
                 connection_config=cfg,
                 api_url="http://localhost:8080",
@@ -1719,7 +1853,7 @@ class TestConnectionConfig:
         cfg = SandboxInClusterConnectionConfig()
         with pytest.raises(ValueError, match="connection_config"):
             KubernetesSandbox(
-                template_name="tpl",
+                warmpool_name="tpl",
                 namespace="ns",
                 connection_config=cfg,
                 gateway_name="my-gw",
@@ -1729,11 +1863,34 @@ class TestConnectionConfig:
         """Without connection_config or api_url/gateway, uses local tunnel."""
         with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
             MockClient.return_value = make_mock_client()
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns")
+            sb = KubernetesSandbox(warmpool_name="tpl", namespace="ns")
             sb.start()
             config = MockClient.call_args[1]["connection_config"]
             assert type(config).__name__ == "SandboxLocalTunnelConnectionConfig"
             sb.stop()
+
+    def test_tunnel_router_namespace_default(self) -> None:
+        """Tunnel mode port-forwards into agent-sandbox-system by default."""
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
+            MockClient.return_value = make_mock_client()
+            sb = KubernetesSandbox(warmpool_name="tpl", namespace="ns")
+            sb.start()
+            config = MockClient.call_args[1]["connection_config"]
+            assert config.router_namespace == "agent-sandbox-system"
+            sb.stop()
+
+    def test_tunnel_router_namespace_override(self) -> None:
+        with patch("k8s_agent_sandbox.SandboxClient") as MockClient:
+            MockClient.return_value = make_mock_client()
+            sb = KubernetesSandbox(warmpool_name="tpl", namespace="ns", router_namespace="custom-router-ns")
+            sb.start()
+            config = MockClient.call_args[1]["connection_config"]
+            assert config.router_namespace == "custom-router-ns"
+            sb.stop()
+
+    def test_router_namespace_stored_on_init(self) -> None:
+        sb, _, _ = _make_sandbox(router_namespace="other-ns")
+        assert sb._router_namespace == "other-ns"
 
 
 # ---------------------------------------------------------------------------
@@ -1746,7 +1903,7 @@ class TestShutdownAfterSeconds:
         """shutdown_after_seconds is passed through to client.create_sandbox()."""
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns", shutdown_after_seconds=600)
+            sb = KubernetesSandbox(warmpool_name="tpl", namespace="ns", shutdown_after_seconds=600)
             sb.start()
             mock.create_sandbox.assert_called_once()
             call_kwargs = mock.create_sandbox.call_args[1]
@@ -1757,7 +1914,7 @@ class TestShutdownAfterSeconds:
         """When shutdown_after_seconds is None, it is not included in kwargs."""
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns")
+            sb = KubernetesSandbox(warmpool_name="tpl", namespace="ns")
             sb.start()
             call_kwargs = mock.create_sandbox.call_args[1]
             assert "shutdown_after_seconds" not in call_kwargs
@@ -1772,32 +1929,98 @@ class TestShutdownAfterSeconds:
         assert sb._shutdown_after_seconds is None
 
 
-class TestWarmPool:
+class TestWarmpoolName:
     def test_forwarded_to_create_sandbox(self) -> None:
-        """warmpool is passed through to client.create_sandbox()."""
+        """warmpool_name becomes the SDK's create_sandbox(warmpool=...)."""
         mock = make_mock_client()
         with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns", warmpool="my-pool")
+            sb = KubernetesSandbox(warmpool_name="my-pool", namespace="ns")
             sb.start()
             mock.create_sandbox.assert_called_once()
             call_kwargs = mock.create_sandbox.call_args[1]
             assert call_kwargs["warmpool"] == "my-pool"
-            sb.stop()
-
-    def test_not_forwarded_when_none(self) -> None:
-        """When warmpool is None, it is not included in kwargs."""
-        mock = make_mock_client()
-        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
-            sb = KubernetesSandbox(template_name="tpl", namespace="ns")
-            sb.start()
-            call_kwargs = mock.create_sandbox.call_args[1]
-            assert "warmpool" not in call_kwargs
+            # The pre-0.5.0 spelling must be gone, not merely unused
+            assert "template" not in call_kwargs
             sb.stop()
 
     def test_stored_on_init(self) -> None:
-        sb, _, _ = _make_sandbox(warmpool="fast-pool")
-        assert sb._warmpool == "fast-pool"
+        sb, _, _ = _make_sandbox(warmpool_name="fast-pool")
+        assert sb._warmpool_name == "fast-pool"
+
+    def test_always_forwarded(self) -> None:
+        """Unlike the old optional warmpool param, this is never omitted."""
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(warmpool_name="pool", namespace="ns")
+            sb.start()
+            assert "warmpool" in mock.create_sandbox.call_args[1]
+            sb.stop()
+
+
+class TestPodMetadata:
+    def test_forwarded_to_create_sandbox(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(
+                warmpool_name="pool",
+                namespace="ns",
+                pod_labels={"team": "platform"},
+                pod_annotations={"owner": "agents"},
+            )
+            sb.start()
+            call_kwargs = mock.create_sandbox.call_args[1]
+            assert call_kwargs["pod_labels"] == {"team": "platform"}
+            assert call_kwargs["pod_annotations"] == {"owner": "agents"}
+            sb.stop()
+
+    def test_not_forwarded_when_none(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(warmpool_name="pool", namespace="ns")
+            sb.start()
+            call_kwargs = mock.create_sandbox.call_args[1]
+            assert "pod_labels" not in call_kwargs
+            assert "pod_annotations" not in call_kwargs
+            sb.stop()
+
+    def test_stored_on_init(self) -> None:
+        sb, _, _ = _make_sandbox(pod_labels={"a": "b"}, pod_annotations={"c": "d"})
+        assert sb._pod_labels == {"a": "b"}
+        assert sb._pod_annotations == {"c": "d"}
+
+    def test_defaults_are_none(self) -> None:
+        sb, _, _ = _make_sandbox()
+        assert sb._pod_labels is None
+        assert sb._pod_annotations is None
+
+
+class TestVolumeClaimTemplates:
+    _VCTS = [{"metadata": {"name": "workspace"}, "spec": {"resources": {"requests": {"storage": "1Gi"}}}}]
+
+    def test_forwarded_to_create_sandbox(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(
+                warmpool_name="pool",
+                namespace="ns",
+                volume_claim_templates=self._VCTS,
+            )
+            sb.start()
+            assert mock.create_sandbox.call_args[1]["volume_claim_templates"] == self._VCTS
+            sb.stop()
+
+    def test_not_forwarded_when_none(self) -> None:
+        mock = make_mock_client()
+        with patch("k8s_agent_sandbox.SandboxClient", return_value=mock):
+            sb = KubernetesSandbox(warmpool_name="pool", namespace="ns")
+            sb.start()
+            assert "volume_claim_templates" not in mock.create_sandbox.call_args[1]
+            sb.stop()
+
+    def test_stored_on_init(self) -> None:
+        sb, _, _ = _make_sandbox(volume_claim_templates=self._VCTS)
+        assert sb._volume_claim_templates == self._VCTS
 
     def test_default_is_none(self) -> None:
         sb, _, _ = _make_sandbox()
-        assert sb._warmpool is None
+        assert sb._volume_claim_templates is None

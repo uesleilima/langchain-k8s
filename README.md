@@ -46,9 +46,29 @@ uv add langchain-k8s
 
 ### Prerequisites
 
-- A Kubernetes cluster with the [agent-sandbox controller](https://github.com/kubernetes-sigs/agent-sandbox) installed
+- A Kubernetes cluster with the [agent-sandbox controller](https://github.com/kubernetes-sigs/agent-sandbox) **v0.5.2 or newer** installed
 - A `SandboxTemplate` resource defining the pod spec for your sandboxes
+- A `SandboxWarmPool` resource referencing that template — this is what sandboxes are claimed from, and it is mandatory (use `replicas: 0` for pure on-demand cold start)
 - `kubectl` configured with cluster access
+
+### Upgrading to 0.6.0 (breaking)
+
+agent-sandbox v0.5.0 graduated its CRDs to `v1beta1`, and a `v1beta1`
+`SandboxClaim` has **no template reference at all** — `spec.warmPoolRef` is
+required instead. A claim now points at a `SandboxWarmPool`, and the pool is
+what points at the `SandboxTemplate`. This package follows that model:
+
+| Before (0.5.x) | Now (0.6.0) |
+| --- | --- |
+| `KubernetesSandbox(template_name=...)` | `KubernetesSandbox(warmpool_name=...)` |
+| `create_kubernetes_sandbox(template_name=...)` | `create_kubernetes_sandbox(warmpool_name=...)` |
+| separate `warmpool=` argument | removed — `warmpool_name` *is* the pool |
+
+There is no deprecated alias: passing `template_name=` now raises
+`TypeError`. To migrate, create a `SandboxWarmPool` pointing at your existing
+template and pass its name. `SandboxInClusterConnectionConfig(use_pod_ip=...)`
+is also gone; the pod IP is now preferred automatically with a cluster-DNS
+fallback.
 
 ## Quick start
 
@@ -67,7 +87,7 @@ client = SandboxClient(
     connection_config=SandboxLocalTunnelConnectionConfig(),
 )
 handle = client.create_sandbox(
-    template="python-sandbox-template",
+    warmpool="python-sandbox-pool",
     namespace="agent-sandbox-system",
 )
 
@@ -88,13 +108,13 @@ client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
 
 ### Config-based mode (convenience)
 
-For simpler setups, pass `template_name` and connection parameters directly. The sandbox is created lazily on first use and destroyed on `stop()`:
+For simpler setups, pass `warmpool_name` and connection parameters directly. The sandbox is created lazily on first use and destroyed on `stop()`:
 
 ```python
 from langchain_k8s import KubernetesSandbox
 
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
 )
 
@@ -110,7 +130,7 @@ backend.stop()
 
 ```python
 with KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
 ) as backend:
     agent = create_deep_agent(model=model, backend=backend, ...)
@@ -129,7 +149,7 @@ client = SandboxClient(
     connection_config=SandboxLocalTunnelConnectionConfig(),
 )
 handle = client.create_sandbox(
-    template="python-sandbox-template",
+    warmpool="python-sandbox-pool",
     namespace="agent-sandbox-system",
 )
 
@@ -165,20 +185,20 @@ client.delete_sandbox(handle.claim_name, "agent-sandbox-system")
 ```python
 # Production — cluster Gateway
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     gateway_name="sandbox-gateway",
 )
 
 # Development — automatic port-forward
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
 )
 
 # Advanced — existing port-forward or in-cluster routing
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     api_url="http://localhost:8080",
 )
@@ -187,10 +207,10 @@ backend = KubernetesSandbox(
 from k8s_agent_sandbox.models import SandboxInClusterConnectionConfig
 
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
-    connection_config=SandboxInClusterConnectionConfig(),          # cluster DNS
-    # connection_config=SandboxInClusterConnectionConfig(use_pod_ip=True),  # pod IP (lower latency)
+    # Prefers the pod IP from the Sandbox status, falls back to cluster DNS.
+    connection_config=SandboxInClusterConnectionConfig(),
 )
 ```
 
@@ -220,7 +240,7 @@ async def make_agent(config: RunnableConfig):
     backend = create_kubernetes_sandbox(
         client=client,
         claim_name=f"sandbox-{thread_id}",
-        template_name="python-sandbox-template",
+        warmpool_name="python-sandbox-pool",
         namespace="agent-sandbox-system",
         labels={"thread_id": thread_id},
     )
@@ -258,7 +278,7 @@ In config-based mode the sandbox pod is created lazily on first use and reused f
 
 ```python
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
 )
 ```
@@ -269,7 +289,7 @@ To get a fresh pod, create a fresh backend — or call `stop()` then `start()`, 
 
 ```python
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     reuse_sandbox=False,
 )
@@ -289,7 +309,7 @@ Restrict which directories agents can write to using `allow_prefixes`. When set,
 
 ```python
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     allow_prefixes=["/tmp/"],
 )
@@ -305,7 +325,7 @@ When `virtual_mode=True`, all file-operation paths (`read`, `write`, `edit`, `ls
 
 ```python
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     virtual_mode=True,
     root_dir="/tmp",
@@ -321,7 +341,7 @@ When combined with `allow_prefixes`, the policy check runs against the **resolve
 
 ```python
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     virtual_mode=True,
     root_dir="/tmp",
@@ -358,7 +378,7 @@ but the container's OS user cannot write to it.
 **Making a custom directory writable** in your `SandboxTemplate`:
 
 ```yaml
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
@@ -368,7 +388,7 @@ spec:
     spec:
       containers:
         - name: python-runtime
-          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.4
           volumeMounts:
             - name: workspace
               mountPath: /workspace
@@ -378,6 +398,60 @@ spec:
 ```
 
 With this configuration, `/workspace` is backed by an `emptyDir` volume and is writable regardless of the container's root filesystem permissions. You can then safely use `root_dir="/workspace"` and `allow_prefixes=["/workspace/"]`.
+
+### Durable workspaces with `volume_claim_templates`
+
+`emptyDir` disappears with the pod. For a workspace that survives a pod
+restart, pass `volume_claim_templates` instead — the claim then requests a
+`PersistentVolumeClaim` per sandbox:
+
+```python
+backend = KubernetesSandbox(
+    warmpool_name="python-sandbox-pool",
+    namespace="agent-sandbox-system",
+    root_dir="/workspace",
+    virtual_mode=True,
+    volume_claim_templates=[
+        {
+            "metadata": {"name": "workspace"},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "1Gi"}},
+            },
+        }
+    ],
+)
+```
+
+Two requirements that are easy to miss:
+
+- The **`SandboxTemplate` pod spec must still declare a matching `volumeMounts` entry** (name `workspace`, `mountPath: /workspace`). The claim template supplies the volume; only the template can mount it.
+- The cluster needs a working `StorageClass`. Kind ships `local-path` with `WaitForFirstConsumer`, so the PVC stays `Pending` until the sandbox pod is scheduled — expect the first start to be slower than with `emptyDir`.
+
+### Pod labels and annotations
+
+`labels` land on the `SandboxClaim` object. To label the **pod** instead —
+so the values are visible to node-level tooling and readable from inside the
+container through the Downward API — use `pod_labels` / `pod_annotations`,
+which map to `spec.additionalPodMetadata`:
+
+```python
+backend = KubernetesSandbox(
+    warmpool_name="python-sandbox-pool",
+    namespace="agent-sandbox-system",
+    labels={"session": "s1"},            # -> SandboxClaim object
+    pod_labels={"team": "platform"},     # -> the running Pod
+    pod_annotations={"owner": "agents"},
+)
+```
+
+These are validated client-side for RFC 1123 syntax only. The controller
+additionally rejects reserved and restricted-domain keys, which fails the
+claim quickly with an `InvalidMetadata` reason rather than timing out.
+
+> **Note:** the SDK always stamps `agents.x-k8s.io/created-by: python-client`
+> on claims it creates, so a claim's label set is never exactly what you
+> passed in. Account for it in any label selector you write.
 
 ### Horizontal scaling and sticky sessions
 
@@ -438,7 +512,7 @@ When an agent process restarts (pod eviction, rolling update, crash), it can rec
 ```python
 # First run — create sandbox and persist claim name
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     skip_cleanup=True,
 )
@@ -449,7 +523,7 @@ redis.set("sandbox:user-123", backend.claim_name)  # persist for reconnection
 ```python
 # After restart — reconnect to the same pod
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     claim_name=redis.get("sandbox:user-123"),  # re-attach, no new pod
     skip_cleanup=True,
@@ -466,7 +540,7 @@ Tag sandboxes at creation with Kubernetes labels for discovery, filtering, and c
 
 ```python
 backend = KubernetesSandbox(
-    template_name="python-sandbox-template",
+    warmpool_name="python-sandbox-pool",
     namespace="agent-sandbox-system",
     labels={
         "session": "abc-123",
@@ -499,7 +573,7 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | Parameter                | Type                              | Default     | Description                                                                                                                            |
 | ------------------------ | --------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | `sandbox`                | `Sandbox \| None`                 | `None`      | Pre-created `k8s_agent_sandbox.Sandbox` handle (ecosystem-standard mode)                                                               |
-| `template_name`          | `str \| None`                     | `None`      | `SandboxTemplate` CRD name. Required when `sandbox` is not provided                                                                    |
+| `warmpool_name`          | `str \| None`                     | `None`      | `SandboxWarmPool` CRD name to claim a sandbox from. Required when `sandbox` is not provided                                            |
 | `namespace`              | `str`                             | `"default"` | Kubernetes namespace                                                                                                                   |
 | `gateway_name`           | `str \| None`                     | `None`      | Gateway name (production mode, config-based only)                                                                                      |
 | `gateway_namespace`      | `str`                             | `"default"` | Gateway namespace                                                                                                                      |
@@ -513,25 +587,37 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `virtual_mode`           | `bool`                            | `False`     | Resolve all paths under `root_dir`                                                                                                     |
 | `skip_cleanup`           | `bool`                            | `False`     | Preserve `SandboxClaim` on `stop()` (config-based only)                                                                                |
 | `claim_name`             | `str \| None`                     | `None`      | Reconnect to existing sandbox by claim name. Cannot be combined with `sandbox`                                                         |
-| `labels`                 | `dict[str, str] \| None`          | `None`      | Kubernetes labels applied to `SandboxClaim`                                                                                            |
+| `labels`                 | `dict[str, str] \| None`          | `None`      | Kubernetes labels applied to the `SandboxClaim` object                                                                                 |
 | `connection_config`      | `SandboxConnectionConfig \| None` | `None`      | Pre-built SDK connection config. Overrides `api_url`/`gateway_name`. Supports `SandboxInClusterConnectionConfig` for in-cluster agents |
 | `shutdown_after_seconds` | `int \| None`                     | `None`      | Auto-delete `SandboxClaim` this many seconds after the sandbox finishes (config-based only)                                            |
-| `warmpool`               | `str \| None`                     | `None`      | `SandboxWarmPool` name for pre-provisioned pod adoption (config-based only)                                                            |
+| `pod_labels`             | `dict[str, str] \| None`          | `None`      | Labels stamped onto the sandbox **Pod** via `spec.additionalPodMetadata` (config-based only)                                           |
+| `pod_annotations`        | `dict[str, str] \| None`          | `None`      | Annotations stamped onto the sandbox **Pod** via `spec.additionalPodMetadata` (config-based only)                                      |
+| `volume_claim_templates` | `list[dict] \| None`              | `None`      | PVC templates for durable sandbox storage (config-based only)                                                                          |
+| `router_namespace`       | `str`                             | `"agent-sandbox-system"` | Namespace of `sandbox-router-svc` for automatic port-forward (development mode only)                                      |
 
 </details>
 
 <details>
 <summary><strong><code>create_kubernetes_sandbox()</code> factory</strong></summary>
 
-| Parameter       | Type                     | Default      | Description                                                              |
-| --------------- | ------------------------ | ------------ | ------------------------------------------------------------------------ |
-| `client`        | `SandboxClient`          | _(required)_ | `k8s_agent_sandbox.SandboxClient` instance                               |
-| `claim_name`    | `str`                    | _(required)_ | `SandboxClaim` name to look up or create                                 |
-| `template_name` | `str`                    | _(required)_ | `SandboxTemplate` CRD name (used when creating)                          |
-| `namespace`     | `str`                    | `"default"`  | Kubernetes namespace                                                     |
-| `labels`        | `dict[str, str] \| None` | `None`       | Labels applied at creation time                                          |
-| `warmpool`      | `str \| None`            | `None`       | `SandboxWarmPool` name for pre-provisioned pod adoption                  |
-| `**kwargs`      |                          |              | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
+| Parameter                | Type                     | Default      | Description                                                              |
+| ------------------------ | ------------------------ | ------------ | ------------------------------------------------------------------------ |
+| `client`                 | `SandboxClient`          | _(required)_ | `k8s_agent_sandbox.SandboxClient` instance                               |
+| `claim_name`             | `str`                    | _(required)_ | `SandboxClaim` name to look up or create                                 |
+| `warmpool_name`          | `str`                    | _(required)_ | `SandboxWarmPool` CRD name the new claim points at                       |
+| `namespace`              | `str`                    | `"default"`  | Kubernetes namespace                                                     |
+| `labels`                 | `dict[str, str] \| None` | `None`       | Labels applied to the `SandboxClaim` object at creation time             |
+| `pod_labels`             | `dict[str, str] \| None` | `None`       | Labels stamped onto the sandbox **Pod**                                  |
+| `pod_annotations`        | `dict[str, str] \| None` | `None`       | Annotations stamped onto the sandbox **Pod**                             |
+| `volume_claim_templates` | `list[dict] \| None`     | `None`       | PVC templates for durable sandbox storage                                |
+| `shutdown_after_seconds` | `int \| None`            | `None`       | TTL after which the controller deletes the `SandboxClaim`                |
+| `sandbox_ready_timeout`  | `int`                    | `180`        | Max seconds to wait for a newly created sandbox to become ready          |
+| `**kwargs`               |                          |              | Forwarded to `KubernetesSandbox` (e.g. `allow_prefixes`, `virtual_mode`) |
+
+Every parameter that has to reach the cluster is declared explicitly here
+rather than left to `**kwargs`. The factory always returns a backend in
+ecosystem-standard mode, so creation-time constructor arguments arriving via
+`**kwargs` would be stored and silently ignored.
 
 </details>
 
@@ -573,15 +659,16 @@ uv run pytest tests/integration/ -v -m integration
 The setup script will:
 
 1. Create a Kind cluster named `langchain-k8s`
-2. Install the agent-sandbox controller and extension CRDs (v0.4.6, overridable via `AGENT_SANDBOX_VERSION`)
-3. Enable the extensions controller
-4. Deploy the sandbox router
-5. Apply the `python-sandbox-template` SandboxTemplate
+2. Install the agent-sandbox controller and extension CRDs from the all-in-one release asset (v0.5.4, overridable via `AGENT_SANDBOX_VERSION`)
+3. Deploy the sandbox router
+4. Apply the `python-sandbox-template` SandboxTemplate
+5. Apply the `python-sandbox-pool` SandboxWarmPool (`replicas: 0` by default; set `WARMPOOL_REPLICAS` to pre-warm pods instead)
 
 ```
 k8s/
 ├── sandbox-router.yaml            # Router Deployment + Service
-└── sandbox-template.yaml          # SandboxTemplate for Python runtime
+├── sandbox-template.yaml          # SandboxTemplate for Python runtime
+└── sandbox-warmpool.yaml          # SandboxWarmPool claims reference
 ```
 
 ---

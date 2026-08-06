@@ -652,7 +652,7 @@ wheels = [
 
 [[package]]
 name = "k8s-agent-sandbox"
-version = "0.4.6"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "kubernetes" },
@@ -660,9 +660,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fd/70/a17b073ce7479afc44a7756a25655649958b3b60f3b0e126397c90902df5/k8s_agent_sandbox-0.4.6.tar.gz", hash = "sha256:a14d69372b842f4747986dae64e4b09631c8bd5799960d31ad6c3e524e9742d7", size = 99224, upload-time = "2026-05-14T19:36:16.685Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/be/b7cd4abda7ceadbdbf438e98ee46d3d5b897ab63b640f2e57a5efafd9dbb/k8s_agent_sandbox-0.5.4.tar.gz", hash = "sha256:e751221faca8efc95c29e98849ea6e98abb8f32bfae00f16d652ea7aa0e30279", size = 146422, upload-time = "2026-07-30T18:37:41.071Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/15/14/699257a55657783a6f2d1ee8d590c3153cc3976557a907a1cbaebceb3c6c/k8s_agent_sandbox-0.4.6-py3-none-any.whl", hash = "sha256:feef320af4302941215641a8fbfaa4d2e673d63a4fa205f6f7e5bf21029d6a7b", size = 64710, upload-time = "2026-05-14T19:36:15.446Z" },
+    { url = "https://files.pythonhosted.org/packages/c4/6f/142499c8c0691040d0ecd904cf07d455ed7660c9f545e6305f40558cb356/k8s_agent_sandbox-0.5.4-py3-none-any.whl", hash = "sha256:edf3d2232f2cbef8c9537f4d132caeabf6eb4ac24d0b4b3948f3702fb7674132", size = 80622, upload-time = "2026-07-30T18:37:39.969Z" },
 ]
 
 [[package]]
@@ -768,7 +768,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", specifier = ">=0.5.3" },
-    { name = "k8s-agent-sandbox", specifier = ">=0.4.6" },
+    { name = "k8s-agent-sandbox", specifier = ">=0.5.4" },
 ]
 
 [package.metadata.requires-dev]

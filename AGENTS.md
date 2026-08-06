@@ -28,7 +28,7 @@ When working in this repository, read the OpenWiki quickstart first, then follow
 
 - `KubernetesSandbox` — the main class; wraps the `k8s_agent_sandbox.SandboxClient`
 - `create_kubernetes_sandbox` — module-level get-or-create factory keyed on `claim_name`; the production entry point for thread-scoped sandboxes
-- **Handle mode** (`sandbox=` passed) vs **config-based mode** (`template_name=` passed) — decides who owns the Kubernetes resource lifecycle
+- **Handle mode** (`sandbox=` passed) vs **config-based mode** (`warmpool_name=` passed) — decides who owns the Kubernetes resource lifecycle
 - **Connection modes** — production (Gateway API), development (auto port-forward), advanced (direct `api_url`), in-cluster
 - `proxy.py` — monkey-patches a bug in the kubernetes Python client's NO_PROXY handling
 
@@ -78,7 +78,7 @@ Selected by `self._owns_lifecycle = sandbox is None` (`sandbox.py:303`):
 
 | | Handle mode | Config-based mode |
 | --- | --- | --- |
-| Trigger | `sandbox=<k8s_agent_sandbox.Sandbox>` | `template_name=` and/or `claim_name=` |
+| Trigger | `sandbox=<k8s_agent_sandbox.Sandbox>` | `warmpool_name=` and/or `claim_name=` |
 | `_started` | `True` immediately | `False` until first use |
 | `stop()` | closes the connection only | deletes the `SandboxClaim` (unless `skip_cleanup=True`) |
 | Auto-reconnect | disabled | enabled when `reuse_sandbox=True` |
@@ -95,7 +95,14 @@ Passing `connection_config` alongside `api_url` or `gateway_name` raises `ValueE
 
 ### Kubernetes access
 
-The library never writes YAML at runtime and normally never calls the Kubernetes API directly — `_ensure_sandbox` goes through `SandboxClient.create_sandbox()` / `get_sandbox()`. The one exception is `create_kubernetes_sandbox` (`sandbox.py:1174-1244`), which reaches past the SDK into `client.k8s_helper` to do a direct `get_namespaced_custom_object` on `sandboxclaims`. Two reasons, both load-bearing: the direct GET returns in ~20 ms versus the SDK's internal 30 s watch timeout, and `create_sandbox()` auto-generates claim names, which would break get-or-create. It handles 409 Conflict for concurrent callers and rolls back on ready-timeout.
+The library never writes YAML at runtime and never touches the Kubernetes API directly. `_ensure_sandbox` goes through `SandboxClient.create_sandbox()` / `get_sandbox()`; `create_kubernetes_sandbox` drops one level down to `client.k8s_helper`, but only to supported helpers — `get_sandbox_claim()`, `create_sandbox_claim()`, `wait_for_claim_ready()`, `delete_sandbox_claim()`. No CRD group/version/plural literal appears anywhere in `src/`, which is what keeps the v1alpha1 → v1beta1 graduation from being a code change.
+
+Two reasons the helper layer is used at all, both still load-bearing:
+
+- `create_sandbox()` auto-generates claim names, which would break get-or-create. Creating the claim ourselves is the only way to make `claim_name` deterministic.
+- `get_sandbox()` resolves via a watch with a 30 s timeout. `get_sandbox_claim()` is a plain GET that returns `None` on 404 (~20 ms), so the "does this claim exist?" pre-flight is cheap.
+
+Readiness is a **single** `wait_for_claim_ready()` watch, seeded with the create response's `metadata.resourceVersion` so the apiserver serves it from the watch cache. The claim's status carries both the bound sandbox name and the forwarded Ready condition, so the older `resolve_sandbox_name()` + `wait_for_sandbox_ready()` pair is redundant — `tests/unit/test_sandbox.py::TestCreateFactory` asserts both are *not* called. The watch also fails fast on terminal claim reasons rather than burning the full timeout. 409 Conflict from a concurrent caller falls through to attach, and any readiness failure rolls the claim back before propagating.
 
 The unit of identity is the `SandboxClaim` name. Persist `claim_name`, pass it to a fresh `KubernetesSandbox`, and `_ensure_sandbox` re-attaches instead of creating — that plus `skip_cleanup=True` is what survives an agent-process restart.
 
@@ -113,14 +120,17 @@ The unit of identity is the `SandboxClaim` name. Persist `claim_name`, pass it t
 - **`reuse_sandbox=False` does not create ephemeral pods.** `self._reuse_sandbox` is read at exactly one place, `sandbox.py:467`, where it gates a single auto-reconnect-and-retry inside `execute()`. `start()`/`stop()` behave identically either way. Older prose in `README.md` and `openwiki/` claims per-invocation pod isolation — it does not exist.
 - **`allow_prefixes` and `virtual_mode` are tool-level only.** `execute("echo bad > /etc/passwd")` bypasses both. Real containment needs the pod `securityContext`.
 - **`allow_prefixes` normalisation appends a trailing slash**, so `["/tmp"]` permits `/tmp/x` but not the literal path `/tmp`.
-- **Policy passing ≠ writable.** `write`/`edit` sniff for `PermissionError` and emit a specific warning. `/tmp` is the safe default; `/workspace` needs an explicit `emptyDir` mount in the `SandboxTemplate`.
-- **Handle mode is one-shot.** After `stop()`, `_template_name` and `_claim_name` are `None`, so a later `execute()` trips `assert self._template_name is not None` (`sandbox.py:999`). The backend is not restartable.
+- **Policy passing ≠ writable.** `write`/`edit` sniff for `PermissionError` and emit a specific warning. `/tmp` is the safe default; `/workspace` needs a volume in the `SandboxTemplate` — an `emptyDir` mount for scratch, or `volume_claim_templates` on the claim plus a matching `volumeMounts` entry in the template for durable storage. Either way the template must do the mounting; a claim template only supplies the volume.
+- **Handle mode is one-shot.** After `stop()`, `_warmpool_name` and `_claim_name` are `None`, so a later `execute()` trips the `assert self._warmpool_name is not None` in `_ensure_sandbox`. The backend is not restartable.
 - **`max_output_size` truncation applies to every `_run_raw` call**, including the internal JSON-emitting scripts that `BaseSandbox.read`/`ls`/`glob` depend on. A large listing truncated mid-JSON surfaces as a parse error, not a clean truncation.
 - **`BaseSandbox.write` fails if the file already exists** — surprising for a method with that name.
 - **`id` returns a construction-time UUID until a handle exists**, even when `claim_name` was supplied. Use the `claim_name` property for persistence.
 - **`upload_files`/`download_files` deliberately bypass the SDK's native endpoints** (native `write()` only supports a fixed upload dir; `/download` is restricted to `/app`). Hence base64-over-shell. `_download_files_native` (`sandbox.py:828`) is currently unreachable — `download_files` always routes to `_download_files_shell`.
-- **`labels` are creation-time only** and silently ignored on reconnect.
-- **`shutdown_after_seconds` and `warmpool` are config-mode only**, and only forwarded when not `None` so older SDKs don't choke on unknown kwargs. `warmpool` is a `str` — the *name* of an existing `SandboxWarmPool` resource, not a config object.
+- **`labels` are creation-time only** and silently ignored on reconnect. They land on the `SandboxClaim` object; `pod_labels`/`pod_annotations` land on the Pod via `spec.additionalPodMetadata`. The SDK also always stamps `agents.x-k8s.io/created-by: python-client`, so a claim's label set is never exactly what was passed.
+- **`shutdown_after_seconds`, `pod_labels`, `pod_annotations` and `volume_claim_templates` are creation-time only**, and forwarded to `create_sandbox()` only when not `None`. That is for call-site readability and to keep the `assert "x" not in call_kwargs` tests meaningful — *not* for old-SDK compatibility, since the floor is now `>=0.5.4`.
+- **Creation-time parameters are inert in handle mode.** `create_kubernetes_sandbox` always returns a handle-mode backend, so `_ensure_sandbox`'s create branch never runs and anything creation-related arriving via `**kwargs` is stored and silently ignored. This is why the factory declares `warmpool_name`, `labels`, `pod_labels`, `pod_annotations`, `volume_claim_templates` and `shutdown_after_seconds` explicitly and routes them to `create_sandbox_claim` itself. Add a new creation-time constructor argument and you must decide whether the factory needs a matching explicit parameter.
+- **`router_namespace` is validated by the SDK, at `start()`.** It feeds a pydantic `field_validator` on `SandboxLocalTunnelConnectionConfig` inside `_create_client`, so a malformed namespace raises `ValidationError` on first use rather than `ValueError` at construction. That is a consequence of invariant 1, not an oversight.
+- **`create_sandbox_claim` kept its positional arity across the 0.4.6 → 0.5.4 bump while parameter 2 changed meaning** from template name to warm pool name. A stale positional call therefore raises nothing — it writes a dangling `warmPoolRef` and fails at the controller after the full ready timeout. This is why `tests/conftest.py` autospecs `SandboxClient` and `K8sHelper`, and why the `create_sandbox_claim` assertion also checks `call_args.args[1]` explicitly.
 
 ## Quick Reference (Makefile)
 
@@ -228,19 +238,31 @@ Ruff is configured with rules: E, F, I, UP, B, SIM. Line length is 120 character
 
 ## Upgrading the `k8s-agent-sandbox` Dependency
 
-When bumping the `k8s-agent-sandbox` version, update **all** of the following:
+**Step 0 — diff the SDK before touching anything.** Both versions sit unpacked on disk: the installed one under `.venv/lib/python3.*/site-packages/k8s_agent_sandbox/`, and any version uv has fetched under `~/.cache/uv/archive-v0/*/k8s_agent_sandbox/`. Diff `sandbox_client.py`, `k8s_helper.py`, `models.py`, `constants.py` and `exceptions.py` directly. Release notes are not sufficient: the 0.4.6 → 0.5.4 bump renamed `create_sandbox_claim`'s second parameter from `template` to `warmpool` *without* changing its arity, which no test and no changelog line would have caught. Also read the release notes for **every** intervening version — release *assets* get renamed too (`manifest.yaml` → `sandbox.yaml` in v0.5.2), which breaks `kind-setup.sh` with a 404 rather than a diff.
 
-| File                           | What to update                                                  |
-| ------------------------------ | --------------------------------------------------------------- |
-| `pyproject.toml`               | `k8s-agent-sandbox>=X.Y.Z` version constraint                   |
-| `k8s/sandbox-template.yaml`    | `python-runtime-sandbox` container image tag                    |
-| `scripts/kind-setup.sh`        | `AGENT_SANDBOX_VERSION` default value                           |
-| `src/langchain_k8s/sandbox.py` | Adapt to any SDK API changes (renamed methods, new parameters)  |
-| `tests/conftest.py`            | Update mocks if SDK interfaces changed (e.g. method renames)    |
-| `tests/unit/test_sandbox.py`   | Update tests for mock changes and new features                  |
-| `README.md`                    | Document new connection modes, parameters, or behaviour changes |
+Then update **all** of the following:
 
-After updating, run `uv sync` then `make check && make test-unit` to verify.
+| File                           | What to update                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------ |
+| `pyproject.toml`               | `k8s-agent-sandbox>=X.Y.Z` version constraint                                              |
+| `src/langchain_k8s/_version.py`| Package version — a breaking public-API change needs a minor bump                          |
+| `src/langchain_k8s/sandbox.py` | Adapt to SDK API changes (renamed methods and parameters, new kwargs, new exceptions)      |
+| `k8s/sandbox-template.yaml`    | `python-runtime-sandbox` image tag **and** the CRD `apiVersion`                             |
+| `k8s/sandbox-warmpool.yaml`    | CRD `apiVersion`; check whether the warm-pool schema changed                                |
+| `k8s/sandbox-router.yaml`      | Pinned staging image tag (no `registry.k8s.io` tag exists for the router)                   |
+| `scripts/kind-setup.sh`        | `AGENT_SANDBOX_VERSION` default, release-asset filenames, and any controller `args` the bundle now sets itself |
+| `tests/conftest.py`            | Mocks and the autospec'd surface; the version claim in the module docstring                 |
+| `tests/unit/test_sandbox.py`   | Call-shape assertions, and new tests for adopted features                                   |
+| `tests/unit/test_agent.py`     | Constructor arguments in the shared `_run_agent` helper                                     |
+| `tests/integration/*.py`       | The `WARMPOOL` constant and the one direct `client.create_sandbox` call in `test_kind.py`    |
+| `README.md`                    | New parameters and behaviour changes; add a breaking-change callout for API renames          |
+| `AGENTS.md`                    | This table, the gotchas list, and the env-var table                                          |
+
+After updating, run `uv sync --all-groups` then `make check && make test-unit`. Before touching a cluster, grep for stale identifiers — a half-done rename in an integration file otherwise surfaces twenty minutes into `make test-integration`:
+
+```bash
+grep -rn "template_name\|template=\|use_pod_ip\|v1alpha1\|manifest\.yaml" src/ tests/ k8s/ scripts/ README.md AGENTS.md
+```
 
 ## Key Files to Read First
 
@@ -267,7 +289,7 @@ Script knobs, all with defaults:
 | Variable                 | Default         | Effect                                  |
 | ------------------------ | --------------- | --------------------------------------- |
 | `CLUSTER_NAME`           | `langchain-k8s` | Kind cluster name                       |
-| `AGENT_SANDBOX_VERSION`  | `v0.4.6`        | Controller / CRD release to install     |
+| `AGENT_SANDBOX_VERSION`  | `v0.5.4`        | Controller / CRD release to install (needs >=v0.5.2) |
 | `REUSE_CLUSTER=1`        | unset           | Reuse an existing cluster instead of recreating |
 | `SKIP_CLUSTER=1`         | unset           | Skip cluster creation entirely          |
 
