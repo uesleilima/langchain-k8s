@@ -1,5 +1,7 @@
 # OpenWiki: langchain-k8s
 
+> **These pages are generated** (see `.last-update.json`), then hand-corrected. Use them as a map of the territory. Before relying on a specific mechanism, attribute name, method signature, or default value, confirm it against `src/langchain_k8s/sandbox.py` — the source is authoritative. Note also that re-running the generator will overwrite corrections made here.
+
 ## What is langchain-k8s?
 
 **langchain-k8s** is a Python package that bridges LangChain Deep Agents with [kubernetes-sigs/agent-sandbox](https://github.com/kubernetes-sigs/agent-sandbox), enabling LangChain agents to run shell commands and file operations inside isolated Kubernetes pods.
@@ -8,7 +10,7 @@
 
 - **Isolated execution** — Each agent gets its own pod with its own filesystem
 - **Self-hosted** — Runs on any Kubernetes cluster you control; no vendor lock-in
-- **Ephemeral or persistent** — Fresh pods per task, or long-lived pods that survive across turns
+- **Disposable or durable** — Tear a pod down at the end of a task, or keep it alive and reconnect to it across turns
 - **Drop-in compatible** — Implements the LangChain `BaseSandbox` protocol
 - **Enterprise-ready** — Path policies, virtual filesystems, sticky sessions, reconnection
 
@@ -81,7 +83,7 @@ with backend:
 | ------------------------ | --------------------------------------------------------------------- | ---------------------------------------------------------- |
 | **KubernetesSandbox**    | Main class implementing LangChain's `BaseSandbox` protocol            | [Architecture](architecture/design.md)                     |
 | **Connection modes**     | How the agent reaches the sandbox (Gateway, port-forward, direct API) | [Workflows: Connection](workflows/connection.md)           |
-| **Lifecycle strategies** | Persistent vs ephemeral pods                                          | [Workflows: Lifecycle](workflows/lifecycle.md)             |
+| **Lifecycle strategies** | Pod lifetime, auto-reconnect, thread-scoped sandboxes                 | [Workflows: Lifecycle](workflows/lifecycle.md)             |
 | **Enterprise features**  | Path policies, virtual filesystem, sticky sessions                    | [Architecture: Enterprise](architecture/enterprise.md)     |
 | **k8s-agent-sandbox**    | The Kubernetes backend SDK we wrap                                    | [Integrations: Dependencies](integrations/dependencies.md) |
 
@@ -166,7 +168,7 @@ See [Integrations: Upgrading](integrations/upgrading.md) for detailed upgrade ch
 - **Policy over permission**: Tool-level policies (`allow_prefixes`, `virtual_mode`) enforce agent constraints before commands reach the container
 - **Base64 file I/O**: File upload/download uses base64 shell commands to avoid SDK limitations
 - **Shell wrapping**: Commands wrapped in `sh -c '...'` for full POSIX semantics
-- **Auto-reconnect**: Persistent mode retries once on connection error before propagating
+- **Auto-reconnect**: With `reuse_sandbox=True` (default) and config-based mode, `execute()` retries once on connection error before propagating. The flag controls only this — it does not change pod lifetime
 - **Error classification**: `_classify_error(output)` maps stderr patterns to `FileOperationError` types
 
 ## Development Workflow
@@ -175,7 +177,7 @@ See [Integrations: Upgrading](integrations/upgrading.md) for detailed upgrade ch
 
 ```bash
 # Install dependencies with uv
-uv sync
+uv sync --all-groups
 
 # Spin up a local Kind cluster (for integration tests)
 ./scripts/kind-setup.sh
@@ -194,7 +196,7 @@ make test-integration
 
 | Task                  | Command                         |
 | --------------------- | ------------------------------- |
-| Install               | `uv sync` or `make install`     |
+| Install               | `uv sync --all-groups` or `make install`     |
 | Lint + format         | `make check`                    |
 | Type check            | `make check` (includes pyright) |
 | Unit tests            | `make test-unit`                |
@@ -212,7 +214,7 @@ See `Makefile` for all targets (run `make help` or `make`).
 - **[Architecture: Design](architecture/design.md)** — `KubernetesSandbox` class design, sandbox lifecycle strategies, error handling, file operations
 - **[Architecture: Enterprise](architecture/enterprise.md)** — Path access policies, virtual filesystem, horizontal scaling, sticky sessions
 - **[Workflows: Connection](workflows/connection.md)** — Connection modes (Production/Gateway, Development/port-forward, Advanced/direct API, InCluster)
-- **[Workflows: Lifecycle](workflows/lifecycle.md)** — Persistent vs ephemeral sandboxes, thread-scoped patterns, sandbox reuse
+- **[Workflows: Lifecycle](workflows/lifecycle.md)** — Pod lifetime, auto-reconnect, thread-scoped patterns, sandbox reuse
 - **[Operations: Testing](operations/testing.md)** — Unit test patterns, integration test setup, mocking the SDK, running tests
 - **[Operations: Deployment](operations/deployment.md)** — Local Kind setup, production cluster setup, example manifests
 - **[Integrations: Dependencies](integrations/dependencies.md)** — Runtime and dev dependencies, Python version support, k8s-agent-sandbox SDK

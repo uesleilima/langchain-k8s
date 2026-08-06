@@ -28,7 +28,7 @@ Implements the [`BaseSandbox`](https://github.com/langchain-ai/deepagents) / `Sa
 
 - **Isolated execution** — each agent gets its own pod with its own filesystem
 - **Self-hosted** — runs on any Kubernetes cluster you control
-- **Ephemeral or persistent** — fresh pods per task, or long-lived pods that survive across turns
+- **Disposable or durable** — tear a pod down at the end of a task, or keep it alive and reconnect to it across turns
 - **Drop-in compatible** — implements the LangChain Deep Agents sandbox protocol
 - **Enterprise-ready** — path policies, virtual filesystems, sticky sessions, reconnection
 
@@ -252,19 +252,20 @@ result = agent.invoke(
 client.delete_sandbox(f"sandbox-user-session-abc", "agent-sandbox-system")
 ```
 
-### Persistent (config-based, default)
+### Config-based lifecycle
+
+In config-based mode the sandbox pod is created lazily on first use and reused for every subsequent call. Filesystem state persists for the life of the backend. `stop()` deletes the `SandboxClaim` — unless you pass `skip_cleanup=True`, which leaves the pod running so you can reconnect to it later by `claim_name`.
 
 ```python
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
-    reuse_sandbox=True,  # default
 )
 ```
 
-One sandbox pod is created lazily and reused across all calls. Fast for cached, long-lived agents. Filesystem state persists between invocations. Auto-reconnects if the pod dies.
+To get a fresh pod, create a fresh backend — or call `stop()` then `start()`, which deletes the claim and provisions a new one.
 
-### Ephemeral (config-based)
+### `reuse_sandbox` — automatic reconnection
 
 ```python
 backend = KubernetesSandbox(
@@ -274,7 +275,9 @@ backend = KubernetesSandbox(
 )
 ```
 
-A fresh sandbox is created for each `start()`/`stop()` cycle. Maximum isolation between invocations at the cost of cold-start latency.
+`reuse_sandbox` controls **error recovery, not pod lifetime**. With the default `True`, a failure inside `execute()` causes the backend to drop the dead sandbox, provision a replacement, and retry the command once before giving up. Setting it to `False` disables that retry, so connection errors propagate to the caller immediately.
+
+It has no effect on `start()`/`stop()`, and it does not create a pod per invocation. Auto-reconnect is also inactive in handle mode, where the caller owns the lifecycle.
 
 ---
 
@@ -355,16 +358,17 @@ but the container's OS user cannot write to it.
 **Making a custom directory writable** in your `SandboxTemplate`:
 
 ```yaml
-apiVersion: agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
+  namespace: agent-sandbox-system
 spec:
-  template:
+  podTemplate:
     spec:
       containers:
-        - name: sandbox
-          image: python:3.12-slim
+        - name: python-runtime
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
           volumeMounts:
             - name: workspace
               mountPath: /workspace
@@ -501,7 +505,7 @@ Labels are only applied at creation time. When reconnecting via `claim_name`, th
 | `gateway_namespace`      | `str`                             | `"default"` | Gateway namespace                                                                                                                      |
 | `api_url`                | `str \| None`                     | `None`      | Direct router URL (advanced mode, config-based only)                                                                                   |
 | `server_port`            | `int`                             | `8888`      | Sandbox runtime port                                                                                                                   |
-| `reuse_sandbox`          | `bool`                            | `True`      | Reuse sandbox across calls (config-based only)                                                                                         |
+| `reuse_sandbox`          | `bool`                            | `True`      | Auto-reconnect and retry once when `execute()` hits a connection error (config-based only). Does not affect pod lifetime               |
 | `max_output_size`        | `int`                             | `1048576`   | Max output bytes before truncation                                                                                                     |
 | `command_timeout`        | `int`                             | `300`       | Default command timeout in seconds. Can be overridden per-call via `execute(timeout=...)`                                              |
 | `allow_prefixes`         | `list[str] \| None`               | `None`      | Restrict `write`/`edit` to these path prefixes                                                                                         |
@@ -569,7 +573,7 @@ uv run pytest tests/integration/ -v -m integration
 The setup script will:
 
 1. Create a Kind cluster named `langchain-k8s`
-2. Install the agent-sandbox controller and extension CRDs (v0.4.5)
+2. Install the agent-sandbox controller and extension CRDs (v0.4.6, overridable via `AGENT_SANDBOX_VERSION`)
 3. Enable the extensions controller
 4. Deploy the sandbox router
 5. Apply the `python-sandbox-template` SandboxTemplate

@@ -82,12 +82,14 @@ This document describes the runtime and development dependencies, Python version
 | Package   | Version | Purpose                                            |
 | --------- | ------- | -------------------------------------------------- |
 | `ruff`    | ≥0.9.0  | Linter + formatter (replaces flake8, isort, black) |
-| `pyright` | ≥1.1.0  | Type checker (strict mode)                         |
+| `pyright` | ≥1.1.0  | Type checker (basic mode)                          |
 
 **Configuration:**
 
-- `ruff`: Line length 120, rules E, F, I, UP, B, SIM (see `pyproject.toml`)
-- `pyright`: Strict mode, Python 3.11 target (see `pyproject.toml`)
+- `ruff`: Line length 120, rules E, F, I, UP, B, SIM, Google docstring convention (see `pyproject.toml`)
+- `pyright`: `typeCheckingMode = "basic"`, Python 3.11 target, with `reportOptionalMemberAccess`, `reportOptionalCall`, `reportOptionalIterable`, `reportOptionalSubscript`, `reportOptionalOperand` and `reportArgumentType` downgraded to warnings (see `pyproject.toml`)
+
+There is **no mypy** in this project — no dependency, no configuration, never invoked. Any `.mypy_cache/` directory in the tree is stale.
 
 ## Python Version Support
 
@@ -242,7 +244,7 @@ pip-audit
 uv add requests
 
 # Add a dev dependency
-uv add --dev mypy
+uv add --dev pytest-mock
 ```
 
 This updates `pyproject.toml` and `uv.lock`.

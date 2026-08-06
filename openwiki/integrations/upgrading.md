@@ -12,7 +12,7 @@ For any dependency upgrade:
 
 1. **Identify what changed** — Read the release notes
 2. **Update version constraint** — In `pyproject.toml`
-3. **Sync dependencies** — `uv sync` (updates `uv.lock`)
+3. **Sync dependencies** — `uv sync --all-groups` (updates `uv.lock`)
 4. **Check for breaking changes** — Run tests
 5. **Adapt code if needed** — API changes, renamed methods, etc.
 6. **Update documentation** — `README.md`, `AGENTS.md`, specs
@@ -65,7 +65,7 @@ dependencies = [
 **Step 4: Sync dependencies**
 
 ```bash
-uv sync
+uv sync --all-groups
 ```
 
 **Step 5: Check release notes for breaking changes**
@@ -183,7 +183,7 @@ Less frequent than `k8s-agent-sandbox` upgrades, but may add new sandbox feature
 **Steps:**
 
 1. Update version in `pyproject.toml`
-2. `uv sync`
+2. `uv sync --all-groups`
 3. Check if new `BaseSandbox` methods exist (unlikely in minor/patch)
 4. Run tests
 5. If new protocol methods exist, implement in `KubernetesSandbox`
@@ -319,7 +319,7 @@ uv run pytest tests/integration/ --timeout=120
 
 GitHub Actions automatically:
 
-1. Installs dependencies with `uv sync`
+1. Installs dependencies with `uv sync --all-groups`
 2. Runs linting, type checking, unit tests
 3. Publishes to PyPI on GitHub release
 

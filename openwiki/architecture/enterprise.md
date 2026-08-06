@@ -82,16 +82,17 @@ If you don't set `allow_prefixes`, writable locations depend on the container's 
 In your `SandboxTemplate`, mount an `emptyDir` volume:
 
 ```yaml
-apiVersion: agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
+  namespace: agent-sandbox-system
 spec:
-  template:
+  podTemplate:
     spec:
       containers:
-        - name: sandbox
-          image: python:3.12-slim
+        - name: python-runtime
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
           volumeMounts:
             - name: workspace
               mountPath: /workspace
@@ -175,22 +176,40 @@ The `_resolve_virtual_path(path: str) -> str` method:
 
 1. **If virtual mode is disabled**, return path unchanged
 2. **Check for traversal attempts**: If path contains `..` or starts with `~`, raise `ValueError`
-3. **Normalize to absolute**: If path doesn't start with `/`, prepend `/`
-4. **Append to root_dir**: `resolved = root_dir + normalized_path`
-5. **Clean with normpath**: `posixpath.normpath(resolved)` to remove redundant `.` and `//`
+3. **If already resolved** (the path already sits under `root_dir`), normalize, re-check containment, and return — do **not** re-prefix
+4. **Normalize to absolute**: If path doesn't start with `/`, prepend `/`
+5. **Append to root_dir**: `resolved = root_dir + normalized_path`
+6. **Clean with normpath**, then **re-check containment**: reject anything that normalizes to outside `root_dir`
 
 ```python
 def _resolve_virtual_path(self, path: str) -> str:
     if not self._virtual_mode or self._root_dir is None:
         return path
+
     if ".." in path or path.startswith("~"):
         msg = f"Path traversal not allowed: {path!r}"
         raise ValueError(msg)
+
+    root_normalized = posixpath.normpath(self._root_dir)
+
+    # Already resolved — validate but don't re-prefix.
+    if path.startswith(root_normalized + "/") or path == root_normalized:
+        normalized = posixpath.normpath(path)
+        if not normalized.startswith(root_normalized + "/") and normalized != root_normalized:
+            raise ValueError(f"Path {path!r} resolves outside root directory {self._root_dir!r}")
+        return normalized
+
     vpath = path if path.startswith("/") else "/" + path
     resolved = self._root_dir.rstrip("/") + vpath
+
     normalized = posixpath.normpath(resolved)
+    if not normalized.startswith(root_normalized + "/") and normalized != root_normalized:
+        raise ValueError(f"Path {path!r} resolves outside root directory {self._root_dir!r}")
+
     return normalized
 ```
+
+**Step 3 is load-bearing, not an optimisation.** `BaseSandbox.write()` internally calls `self.upload_files()`, and both layers resolve. Without the short-circuit, `/src/main.py` silently becomes `/workspace/workspace/src/main.py`. Any new override that resolves and then delegates to `super()` inherits this constraint.
 
 ### Blocked Traversal Attempts
 
@@ -201,10 +220,12 @@ backend = KubernetesSandbox(
     root_dir="/workspace",
 )
 
-backend.read("../../../etc/passwd")  # ❌ ValueError: path traversal not allowed
-backend.read("~/.ssh/id_rsa")        # ❌ ValueError: path traversal not allowed
-backend.write("./etc/passwd", b"..") # ✅ OK (resolves to /workspace/etc/passwd)
+backend.read("../../../etc/passwd")  # ❌ result.error: "Path traversal not allowed: ..."
+backend.read("~/.ssh/id_rsa")        # ❌ result.error: "Path traversal not allowed: ..."
+backend.write("./etc/passwd", "..")  # ✅ OK (resolves to /workspace/etc/passwd)
 ```
+
+`_resolve_virtual_path` raises `ValueError`, but the public file-operation methods catch it and return it in the result's `error` field — they do not propagate the exception to the caller.
 
 ### Affected Methods
 
@@ -213,9 +234,9 @@ Virtual path resolution applies to all file-operation methods:
 - `read(path)` — Read file content
 - `write(path, content)` — Write file
 - `edit(path, ...)` — Edit file
-- `ls_info(path)` — List directory
-- `glob_info(pattern)` — Glob pattern
-- `grep_raw(pattern, ...)` — Grep files
+- `ls(path)` — List directory
+- `glob(pattern, path)` — Glob pattern
+- `grep(pattern, ...)` — Grep files
 - `upload_files([(path, content), ...])` — Upload files
 - `download_files([path, ...])` — Download files
 

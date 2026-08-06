@@ -16,9 +16,11 @@ This document covers local development setup, production cluster setup, and exam
 
 The repository includes a `kind-setup.sh` script that:
 
-1. Creates a local Kind cluster named `agent-sandbox`
-2. Installs the agent-sandbox controller
-3. Deploys example manifests
+1. Creates a local Kind cluster named `langchain-k8s`
+2. Installs the agent-sandbox controller and extension CRDs (`v0.4.6` by default) and enables the extensions controller
+3. Deploys the sandbox router and the `python-sandbox-template` manifest
+
+Override via `CLUSTER_NAME`, `AGENT_SANDBOX_VERSION`, `REUSE_CLUSTER=1` (reuse an existing cluster), or `SKIP_CLUSTER=1` (skip creation entirely).
 
 ```bash
 # From repository root
@@ -31,11 +33,10 @@ kubectl get nodes
 
 **What it creates:**
 
-- Kind cluster: `agent-sandbox`
-- Namespace: `agent-sandbox-system` (controller)
-- Namespace: `default` (for your sandboxes)
+- Kind cluster: `langchain-k8s`
+- Namespace: `agent-sandbox-system` (controller, router, and the template)
 - SandboxTemplate: `python-sandbox-template`
-- Gateway API (if supported): `sandbox-gateway`
+- Sandbox router: `sandbox-router` Deployment + `sandbox-router-svc` Service
 
 ### Testing Locally
 
@@ -86,17 +87,19 @@ Apply a `SandboxTemplate` CRD that defines the pod spec for your sandboxes.
 **Example: Python runtime**
 
 ```yaml
-apiVersion: agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
   namespace: agent-sandbox-system
 spec:
-  template:
+  podTemplate:
     spec:
       containers:
-        - name: sandbox
-          image: python:3.12-slim
+        - name: python-runtime
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
+          ports:
+            - containerPort: 8888
           resources:
             requests:
               memory: "128Mi"
@@ -120,14 +123,16 @@ spec:
 
 **Example: Node.js runtime**
 
+The container must serve the agent-sandbox runtime API on its declared port — a bare language base image will not work. Build your own image on that contract, or start from the published runtime images.
+
 ```yaml
-apiVersion: agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1alpha1
 kind: SandboxTemplate
 metadata:
   name: node-sandbox-template
   namespace: agent-sandbox-system
 spec:
-  template:
+  podTemplate:
     spec:
       containers:
         - name: sandbox
@@ -346,13 +351,13 @@ By default, pods are created on-demand (cold-start ~5-10 seconds). To reduce lat
 
 1. **Use warm pools** (controller feature):
 
-   ```python
-   from k8s_agent_sandbox.models import WarmPool
+   Create a `SandboxWarmPool` resource in the cluster, then reference it by name — `warmpool` is a `str`, and pool sizing lives in that resource's spec:
 
+   ```python
    backend = KubernetesSandbox(
        template_name="python-sandbox-template",
        namespace="agent-sandbox-system",
-       warmpool=WarmPool(pool_size=10, idle_timeout=300),
+       warmpool="python-sandbox-pool",
    )
    ```
 
@@ -414,17 +419,17 @@ Minimal production setup with agent service + gateway:
 
    ```bash
    kubectl apply -f - <<EOF
-   apiVersion: agents.x-k8s.io/v1alpha1
+   apiVersion: extensions.agents.x-k8s.io/v1alpha1
    kind: SandboxTemplate
    metadata:
      name: python-sandbox-template
      namespace: agent-sandbox-system
    spec:
-     template:
+     podTemplate:
        spec:
          containers:
-           - name: sandbox
-             image: python:3.12-slim
+           - name: python-runtime
+             image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
              volumeMounts:
                - name: workspace
                  mountPath: /workspace

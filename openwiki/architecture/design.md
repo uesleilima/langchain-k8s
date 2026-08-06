@@ -8,7 +8,7 @@
 
 - Lazy initialization (never contact the cluster in `__init__`)
 - Thread-safe (support multi-threaded agent environments)
-- Flexible lifecycle (persistent pods vs ephemeral pods)
+- Flexible lifecycle (long-lived pods, or torn down and reconnected by `claim_name`)
 - Transparent error handling (map SDK exceptions to `FileOperationError` types)
 - Filesystem-relative operations (virtual paths, write policies)
 
@@ -16,7 +16,7 @@
 
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |
-| `src/langchain_k8s/sandbox.py`  | Main `KubernetesSandbox` class (2,000+ lines)                           |
+| `src/langchain_k8s/sandbox.py`  | `KubernetesSandbox` class and the `create_kubernetes_sandbox` factory (~1,300 lines) |
 | `src/langchain_k8s/__init__.py` | Public API: exports `KubernetesSandbox` and `create_kubernetes_sandbox` |
 | `src/langchain_k8s/proxy.py`    | Kubernetes client NO_PROXY monkey-patch (infrastructure only)           |
 | `src/langchain_k8s/_version.py` | Version constant                                                        |
@@ -30,7 +30,7 @@
 deepagents.backends.sandbox.BaseSandbox
 └── langchain_k8s.KubernetesSandbox
     ├── implements: execute(), start(), stop(), __enter__, __exit__
-    ├── overrides: read(), write(), edit(), ls_info(), glob_info(), grep_raw()
+    ├── overrides: read(), write(), edit(), ls(), glob(), grep()
     └── provides: upload_files(), download_files() (custom implementations)
 ```
 
@@ -143,9 +143,9 @@ with backend:
 
 ## Lifecycle Strategies
 
-### Persistent Sandbox (`reuse_sandbox=True`, default)
+### Default: one lazily-created pod, with auto-reconnect (`reuse_sandbox=True`)
 
-**One pod is created lazily and reused across all `execute()` calls.**
+**One pod is created lazily and reused across all `execute()` calls.** Pod reuse is how config-based mode always works; the flag additionally enables reconnect-and-retry on connection failure.
 
 ```python
 backend = KubernetesSandbox(
@@ -177,9 +177,9 @@ backend.stop()  # pod is deleted
 - Once created, all threads can safely call `execute()` on the same pod
 - Auto-reconnect logic: if connection fails, lock gates a single retry
 
-### Ephemeral Sandbox (`reuse_sandbox=False`)
+### Disabling auto-reconnect (`reuse_sandbox=False`)
 
-**A fresh pod is created for each `start()`/`stop()` cycle.**
+**`reuse_sandbox` controls error recovery, not pod lifetime.** There is no per-invocation pod mode.
 
 ```python
 backend = KubernetesSandbox(
@@ -188,55 +188,55 @@ backend = KubernetesSandbox(
     reuse_sandbox=False,
 )
 
-# Fresh pod A created and destroyed after this call
+# One pod, created lazily, reused for both calls — same as the default.
 result1 = backend.execute("echo hello")
-# Pod A destroyed
-
-# Fresh pod B created for next call
 result2 = backend.execute("ls -la")
-# Pod B destroyed
+
+# The difference: if the connection to the pod drops, this raises
+# instead of silently provisioning a replacement and retrying.
 ```
 
 **Characteristics:**
 
-- Maximum isolation between calls
-- No state leakage between invocations
-- Higher latency (cold-start per call)
-- Cleaner resource lifecycle (each call owns its pod)
+- Connection failures surface to the caller rather than being papered over
+- No hidden pod churn, so latency and resource use stay predictable
+- Appropriate when the caller has its own retry or supervision strategy
+
+`self._reuse_sandbox` is read at exactly one place in the source (`sandbox.py:467`), inside the `except` branch of `execute()`.
 
 ## Error Handling
 
 ### Error Classification
 
-`KubernetesSandbox` maps stderr patterns to `FileOperationError` types from the `deepagents` protocol:
+`FileOperationError` in the `deepagents` protocol is a **string literal type**, not an exception class. `_classify_error` maps stderr patterns to exactly three values:
 
-- **`FileNotFoundError`**: Path doesn't exist (`No such file or directory`, `cannot access`)
-- **`IsADirectoryError`**: Path is a directory when a file expected
-- **`NotADirectoryError`**: Path is not a directory
-- **`PermissionError`**: Permission denied (`Permission denied`)
-- **`ValueError`**: Invalid operation (write policy violation, path traversal, etc.)
-- **`TimeoutError`**: Command timed out
+- **`"permission_denied"`** — stderr contains `Permission denied`
+- **`"is_directory"`** — the path is a directory where a file was expected
+- **`"file_not_found"`** — the fallback for everything else
 
-Method: `_classify_error(output: str) -> FileOperationError | None`
+Method: `_classify_error(output: str) -> FileOperationError` (`sandbox.py:1264`) — it always returns a value, never `None`.
+
+Path validation is separate: `_validate_path` (`sandbox.py:1248`) returns the literal `"invalid_path"` for empty or relative paths, before any command is dispatched.
 
 ### Reconnection Logic
 
-In persistent mode (`reuse_sandbox=True`), `execute()` implements auto-reconnect:
+When `reuse_sandbox=True` (the default) **and** the backend owns the lifecycle (config-based mode), `execute()` retries once:
 
 ```python
 try:
-    result = self._sandbox.commands.run(...)
-except ConnectionError:
-    # Pod may have died; try once more
-    if not self._reconnect_attempted:
-        self._reconnect_attempted = True
-        self._ensure_sandbox(force=True)  # force recreate
-        result = self._sandbox.commands.run(...)
+    resp = self._run(command, timeout=effective_timeout)
+except Exception as exc:
+    if self._reuse_sandbox and self._owns_lifecycle:
+        self._destroy_sandbox()   # tear down the dead sandbox
+        self._ensure_sandbox()    # provision a replacement
+        resp = self._run(command, timeout=effective_timeout)
     else:
         raise
 ```
 
-This ensures brief pod outages don't kill the agent session.
+There is no `_reconnect_attempted` flag and `_ensure_sandbox()` takes no `force` argument — teardown is what makes the subsequent `_ensure_sandbox()` provision a new sandbox, because it clears `_started`. The retry is not recursive, so a second consecutive failure propagates.
+
+This ensures brief pod outages don't kill the agent session. Note that it is disabled in handle mode regardless of `reuse_sandbox`, since the caller owns the Kubernetes resources.
 
 ## File Operations
 
@@ -305,15 +305,18 @@ backend.read("../../../etc/passwd")  # raises ValueError
 
 **Resolution logic** (`_resolve_virtual_path(path: str) -> str`):
 
-1. Check for `..` and `~` (reject if found)
-2. Normalize to absolute (prepend `/` if needed)
-3. Concatenate with `root_dir`
-4. Apply `posixpath.normpath()` to clean up
+1. Short-circuit if the path already sits under `root_dir` — validate, but do not re-prefix
+2. Check for `..` and `~` (reject if found)
+3. Normalize to absolute (prepend `/` if needed)
+4. Concatenate with `root_dir`
+5. Apply `posixpath.normpath()`, then re-check that the result is still contained under `root_dir`
+
+Step 1 is load-bearing, not an optimisation: `BaseSandbox.write()` internally calls `self.upload_files()`, which resolves again. Without the short-circuit, `/src/main.py` would become `/tmp/tmp/src/main.py`.
 
 **Used by:**
 
 - `read()`, `write()`, `edit()`
-- `ls_info()`, `glob_info()`, `grep_raw()`
+- `ls()`, `glob()`, `grep()`
 - `upload_files()`, `download_files()`
 
 ### Write Policy (`allow_prefixes`)
@@ -348,9 +351,8 @@ backend.write("/etc/passwd", b"DENIED")     # raises ValueError
 
 `KubernetesSandbox` is thread-safe for concurrent `execute()` calls in persistent mode:
 
-- **Initialization lock** (`self._init_lock`): Gates `_ensure_sandbox()` — only one thread creates the pod
-- **Reconnect flag** (`self._reconnect_attempted`): Prevents double-reconnection
-- **Sandbox handle** (`self._sandbox`): Once created, all threads safely use it (the SDK handles thread-safe communication to the pod)
+- **Initialization lock** (`self._lock`): Gates `_ensure_sandbox()` and `_destroy_sandbox()` — only one thread creates or tears down the pod. `_ensure_sandbox` double-checks `self._started` outside and inside the lock
+- **Sandbox handle** (`self._sandbox`): Once created, all threads safely use it (the SDK handles thread-safe communication to the pod). `execute()` itself is lock-free once the handle exists
 
 **Safe usage:**
 
@@ -418,22 +420,23 @@ backend = KubernetesSandbox(
 
 When using the `k8s-agent-sandbox` controller's warm pool feature, pass a `WarmPool` object:
 
-```python
-from k8s_agent_sandbox.models import WarmPool
+`warmpool` is a `str | None` — the **name** of a `SandboxWarmPool` resource that already exists in the cluster. Pool size and idle behaviour are properties of that resource, not constructor arguments.
 
+```python
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
-    warmpool=WarmPool(pool_size=5, idle_timeout=300),
+    warmpool="python-sandbox-pool",
 )
 ```
 
 **What it does:**
 
-- Controller maintains a pool of pre-warmed pods
-- When you request a sandbox, you get one from the pool (faster)
-- Idle pods are destroyed after timeout
+- The controller maintains a pool of pre-warmed pods, per the `SandboxWarmPool` spec
+- When you request a sandbox, one is adopted from the pool instead of being provisioned cold
 - Reduces cold-start latency for high-throughput scenarios
+
+Config-based mode only, and ignored when reconnecting by `claim_name`. The argument is forwarded to the SDK only when non-`None`, so older SDK versions don't choke on the unknown kwarg.
 
 ## Testing the Implementation
 
@@ -445,7 +448,7 @@ See [Operations: Testing](../operations/testing.md) for:
 
 ## Further Reading
 
-- [Workflows: Lifecycle](../workflows/lifecycle.md) — Persistent vs ephemeral sandboxes, thread-scoped patterns
+- [Workflows: Lifecycle](../workflows/lifecycle.md) — Pod lifetime, auto-reconnect, thread-scoped patterns
 - [Workflows: Connection](../workflows/connection.md) — Connection modes and configuration
 - [Architecture: Enterprise](../enterprise.md) — Path policies and virtual filesystem details
 - `specs/plans/foundation.md` — Original design rationale and decisions

@@ -10,7 +10,7 @@ This document explains the test structure, how to run tests, and test patterns u
 tests/
 ├── conftest.py                    Shared fixtures and mock factory
 ├── unit/
-│   ├── test_sandbox.py            ~2,000 lines, comprehensive unit tests
+│   ├── test_sandbox.py            ~1,800 lines, comprehensive unit tests
 │   ├── test_agent.py              Agent integration tests (mocked)
 │   ├── test_proxy.py              Proxy patch tests
 │   └── test_imports.py            Smoke test (imports work)
@@ -27,7 +27,7 @@ tests/
 
 ```bash
 # Install dependencies
-uv sync
+uv sync --all-groups
 
 # Run unit tests (no cluster required)
 make test-unit
@@ -74,6 +74,8 @@ uv run pytest tests/unit/ --cov=src/langchain_k8s --cov-report=html
 
 Integration tests create a real Kind cluster and run actual sandboxes. These tests verify end-to-end behavior.
 
+They are marked via `pytestmark = pytest.mark.integration` at module scope — there are no per-test decorators. `tests/integration/conftest.py` also **auto-skips** them (`pytest_collection_modifyitems` shells out to `kind get clusters`) when the `langchain-k8s` cluster is absent, so running them without a cluster skips rather than fails.
+
 ```bash
 # Setup Kind cluster (one-time)
 ./scripts/kind-setup.sh
@@ -82,7 +84,7 @@ Integration tests create a real Kind cluster and run actual sandboxes. These tes
 uv run pytest tests/integration/ -v -m integration
 
 # Run specific integration test
-uv run pytest tests/integration/test_kind.py::TestIntegration::test_execute -v -m integration
+uv run pytest tests/integration/test_kind.py::TestBasicExecution -v -m integration
 
 # Teardown Kind cluster
 ./scripts/kind-teardown.sh
@@ -208,14 +210,13 @@ def test_write_and_read(sandbox):
 
 ### Testing Error Handling
 
+File operations do **not** raise — they return a result object whose `error` field carries a `FileOperationError`, which is a string literal (`"file_not_found"`, `"permission_denied"`, `"is_directory"`, `"invalid_path"`).
+
 ```python
 def test_file_not_found(sandbox):
-    """Test FileNotFoundError classification."""
-    try:
-        sandbox.read("/nonexistent/file.txt")
-        assert False, "Should raise"
-    except FileOperationError as e:
-        assert e.type == FileNotFoundError
+    """Test file_not_found classification."""
+    result = sandbox.read("/nonexistent/file.txt")
+    assert result.error == "file_not_found"
 ```
 
 ### Testing Virtual Mode
@@ -230,8 +231,10 @@ def test_virtual_mode_path_traversal(sandbox):
         root_dir="/workspace",
     )
 
-    with pytest.raises(ValueError, match="Path traversal"):
-        backend.read("../../../etc/passwd")
+    # _resolve_virtual_path raises ValueError internally, but the public
+    # file-operation methods catch it and return it as a result error.
+    result = backend.read("../../../etc/passwd")
+    assert "Path traversal not allowed" in result.error
 ```
 
 ### Testing Policy Enforcement
@@ -245,13 +248,11 @@ def test_allow_prefixes_blocks_write(sandbox):
         allow_prefixes=["/workspace/"],
     )
 
-    try:
-        backend.write("/etc/passwd", b"bad")
-        assert False, "Should raise"
-    except FileOperationError as e:
-        assert e.type == ValueError
-        assert "not under any allowed prefix" in str(e)
+    result = backend.write("/etc/passwd", "bad")
+    assert "not under any allowed prefix" in result.error
 ```
+
+Note the policy check short-circuits: no command is dispatched to the pod, so this works against a mock client with no cluster.
 
 ## Common Test Issues
 
@@ -259,7 +260,7 @@ def test_allow_prefixes_blocks_write(sandbox):
 
 ```bash
 # Ensure dev dependencies are installed
-uv sync
+uv sync --all-groups
 ```
 
 ### "Mock SandboxClient not found"

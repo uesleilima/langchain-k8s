@@ -6,9 +6,9 @@ This document explains sandbox lifecycle strategies, thread-scoped patterns for 
 
 ## Lifecycle Strategies
 
-### Persistent Sandbox (`reuse_sandbox=True`, default)
+### Default: one lazily-created pod, with auto-reconnect (`reuse_sandbox=True`)
 
-**One pod is created lazily and reused across all `execute()` calls.**
+**One pod is created lazily and reused across all `execute()` calls.** Pod reuse is how config-based mode always works; the flag additionally enables reconnect-and-retry on connection failure.
 
 ```python
 from langchain_k8s import KubernetesSandbox
@@ -60,9 +60,9 @@ backend.stop()  # Pod is deleted
 
 **Use case:** Long-lived agent sessions where you want low latency and shared workspace.
 
-### Ephemeral Sandbox (`reuse_sandbox=False`)
+### Strict Failure Propagation (`reuse_sandbox=False`)
 
-**A fresh pod is created for each `start()`/`stop()` cycle.**
+**`reuse_sandbox` controls error recovery, not pod lifetime.** Setting it to `False` does not give you a pod per invocation — there is no such mode. It disables the single automatic reconnect-and-retry inside `execute()`.
 
 ```python
 backend = KubernetesSandbox(
@@ -76,30 +76,26 @@ agent = create_deep_agent(
     backend=backend,
 )
 
-# First invoke() creates pod A and destroys it after idle timeout
+# One pod, created lazily on first use, reused for every invoke() —
+# exactly as with the default. Filesystem state is shared throughout.
 result1 = agent.invoke({...})
-# Pod A destroyed
-
-# Second invoke() creates pod B (fresh filesystem)
 result2 = agent.invoke({...})
-# Pod B destroyed
 
-# Third invoke() creates pod C (fresh filesystem)
-result3 = agent.invoke({...})
-# Pod C destroyed
+# The difference: if the pod dies mid-session, this raises instead of
+# quietly provisioning a replacement and retrying.
 
-backend.stop()
+backend.stop()   # deletes the SandboxClaim
 ```
 
 **Characteristics:**
 
-- ✅ Maximum isolation between calls (no state leakage)
-- ✅ Cleaner resource lifecycle (each call owns its pod)
-- ❌ Higher latency (cold-start per call)
-- ❌ No filesystem state persistence between calls
-- ❌ Higher pod churn (more resources)
+- ✅ Pod failures surface to the caller instead of being papered over
+- ✅ No hidden pod churn — latency and resource use stay predictable
+- ❌ A transient connection blip ends the session unless you retry yourself
 
-**Use case:** One-off tasks or batch jobs where isolation matters more than latency.
+**Use case:** Callers with their own retry or supervision strategy, or where a silently swapped-out pod (and its lost filesystem state) would be worse than a visible error.
+
+**To get a fresh pod per task**, create a fresh backend per task, or call `stop()` then `start()` — both of which delete the claim and provision a new sandbox. This is independent of `reuse_sandbox`.
 
 ## Lazy Initialization
 
@@ -284,27 +280,25 @@ result2 = backend.execute("echo hello")  # ✅ Automatically reconnects and recr
 **How it works:**
 
 1. `execute()` tries to run the command
-2. If connection fails, log the error
-3. Attempt to `_ensure_sandbox(force=True)` to recreate the pod
-4. Retry the command once
-5. If still fails, propagate the error
+2. If it raises, and `reuse_sandbox` is `True` **and** the backend owns the lifecycle, log a warning
+3. Call `_destroy_sandbox()` to tear down the dead sandbox — this clears `_started`
+4. Call `_ensure_sandbox()`, which therefore provisions a replacement
+5. Retry the command once
+6. If it fails again, propagate the error
 
-**Note:** Only retries once. Multiple failures will propagate.
+**Note:** Only retries once — the retry is not recursive. Auto-reconnect is inactive in handle mode regardless of `reuse_sandbox`, because the caller owns the Kubernetes resources.
 
 ## Warm Pools
 
 The `k8s-agent-sandbox` controller can pre-warm a pool of idle sandbox pods, reducing cold-start latency:
 
-```python
-from k8s_agent_sandbox.models import WarmPool
+`warmpool` is a `str | None` — the **name** of a `SandboxWarmPool` resource that already exists in the cluster. Pool size and idle behaviour live in that resource's spec, not in the constructor call.
 
+```python
 backend = KubernetesSandbox(
     template_name="python-sandbox-template",
     namespace="agent-sandbox-system",
-    warmpool=WarmPool(
-        pool_size=5,           # Keep 5 pods warm
-        idle_timeout=300,      # Destroy after 5 minutes idle
-    ),
+    warmpool="python-sandbox-pool",
 )
 ```
 
@@ -342,14 +336,16 @@ backend.stop()  # Pod is NOT deleted
 
 ## Comparing Lifecycle Strategies
 
-| Aspect               | Persistent        | Ephemeral              | Thread-Scoped                    |
-| -------------------- | ----------------- | ---------------------- | -------------------------------- |
-| **Pods per agent**   | 1                 | 1 per invoke           | 1 per thread                     |
-| **Cold-start**       | Once (first call) | Every call             | Once (first turn)                |
-| **Filesystem state** | Persists          | Fresh each time        | Persists per thread              |
-| **Best for**         | Long sessions     | One-off tasks          | Multi-turn conversations         |
-| **Scaling**          | Simple            | Simple                 | Complex (requires get-or-create) |
-| **Cleanup**          | Manual (`stop()`) | Automatic (after idle) | Manual (by `claim_name`)         |
+| Aspect               | Single backend    | Backend per task              | Thread-Scoped                    |
+| -------------------- | ----------------- | ----------------------------- | -------------------------------- |
+| **Pods per agent**   | 1                 | 1 per task                    | 1 per thread                     |
+| **Cold-start**       | Once (first call) | Every task                    | Once (first turn)                |
+| **Filesystem state** | Persists          | Fresh each task               | Persists per thread              |
+| **Best for**         | Long sessions     | One-off or batch jobs         | Multi-turn conversations         |
+| **Scaling**          | Simple            | Simple                        | Complex (requires get-or-create) |
+| **Cleanup**          | Manual (`stop()`) | Manual (`stop()` per backend) | Manual (by `claim_name`)         |
+
+`reuse_sandbox` is orthogonal to all three columns — it selects whether `execute()` auto-recovers from a dropped connection, nothing more.
 
 ## Further Reading
 

@@ -355,6 +355,6 @@ kubectl exec -it <agent-pod> -- \
 
 ## Further Reading
 
-- [Workflows: Lifecycle](lifecycle.md) — Persistent vs ephemeral sandboxes
+- [Workflows: Lifecycle](lifecycle.md) — Pod lifetime, auto-reconnect, thread-scoped patterns
 - [Operations: Deployment](../operations/deployment.md) — Setup manifests for local and production
 - [Architecture: Design](../architecture/design.md) — Constructor modes and lifecycle
