@@ -1,0 +1,29 @@
+# SandboxWarmPool — the resource a SandboxClaim points at.
+#
+# Since agent-sandbox v0.5.0 (API v1beta1) a SandboxClaim has no template
+# reference at all: `spec.warmPoolRef` is required, and the pool is what
+# points at the SandboxTemplate.  So this resource is mandatory, not an
+# optimisation — without it every claim fails with WarmPoolNotFound.
+#
+# `replicas: 0` is the documented pattern for pure on-demand (cold-start)
+# sandboxes: pods are created when a claim arrives rather than kept warm.
+# That is what the integration tests want — a resident pod would cost
+# 250m CPU / 512Mi on a laptop from the moment setup finishes, the pool
+# would churn in the background of every test, and a test that passes only
+# because a pod was pre-warmed hides cold-start regressions.
+#
+# The 0 below must stay explicit: the CRD schema defaults `replicas` to 1,
+# so omitting the field pre-warms a pod rather than disabling warming.
+#
+# For production, raise `replicas` to trade idle capacity for start-up
+# latency.  `scripts/kind-setup.sh` exposes WARMPOOL_REPLICAS to patch this
+# value locally if you want to measure the warm path.
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: python-sandbox-pool
+  namespace: agent-sandbox-system
+spec:
+  sandboxTemplateRef:
+    name: python-sandbox-template
+  replicas: 0

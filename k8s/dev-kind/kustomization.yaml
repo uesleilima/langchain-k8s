@@ -1,0 +1,51 @@
+# Dev-only overlay for the local Kind cluster.
+#
+# The base `sandbox-router.yaml` is secure-by-default and sets no auth env
+# vars, so the router refuses to start until one is supplied (agent-sandbox
+# v0.5.0 hardening, kubernetes-sigs#755 — an unconfigured router would be an
+# open proxy to every sandbox pod).
+#
+# This overlay supplies the unauthenticated opt-out.  It is isolated in its own
+# directory so the insecure setting cannot be copy-pasted into a shared cluster
+# along with the base YAML, and so `kubectl apply -f k8s/sandbox-router.yaml`
+# on its own can never produce an open proxy.
+#
+# It is applied by `scripts/kind-setup.sh` and is safe THERE AND ONLY THERE:
+# a single-node Kind cluster reached over `kubectl port-forward`, never exposed
+# beyond the developer's machine.  We opt out rather than set a token because
+# the Python SDK cannot send one — no connection config carries an auth token
+# and the connector sets no Authorization header — so a token-protected router
+# would be unreachable from the client under test.
+#
+# For a shared cluster: use the Gateway connection mode, or the Go router with
+# `--authz-mode=scoped-token`.
+#
+# Applying via an overlay rather than `kubectl set env` after the fact matters
+# for more than tidiness: patching after apply briefly creates a second
+# ReplicaSet whose pod has no opt-out and therefore dies, leaving an `Error`
+# pod in the namespace while setup reports success.
+#
+# Build with:
+#
+#   kubectl kustomize --load-restrictor LoadRestrictionsNone k8s/dev-kind
+#
+# The flag is required because the base sits *beside* this overlay rather than
+# below it, and kustomize otherwise refuses to load files outside the
+# kustomization root.  That restriction is about which files kustomize may
+# read on disk — it is not a cluster security control.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../sandbox-router.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: sandbox-router
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/env
+        value:
+          - name: ALLOW_UNAUTHENTICATED_ROUTER
+            value: "true"

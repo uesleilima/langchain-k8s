@@ -10,8 +10,13 @@ This creates a Kind cluster named ``langchain-k8s`` with:
 
 1. agent-sandbox controller + extension CRDs
 2. sandbox-router deployment
-3. ``python-runtime-sandbox`` image loaded into Kind
-4. ``python-sandbox-template`` SandboxTemplate
+3. ``python-sandbox-template`` SandboxTemplate
+4. ``python-sandbox-pool`` SandboxWarmPool — what claims actually
+   reference; the pool is what points at the template
+
+The ``python-runtime-sandbox`` image is *not* preloaded into Kind; the node
+pulls it from ``registry.k8s.io`` on first use, so the first test to create a
+sandbox absorbs that pull inside its ready timeout.
 
 Run tests::
 
@@ -32,7 +37,7 @@ from langchain_k8s import KubernetesSandbox, create_kubernetes_sandbox
 
 pytestmark = pytest.mark.integration
 
-TEMPLATE = "python-sandbox-template"
+WARMPOOL = "python-sandbox-pool"
 NAMESPACE = "agent-sandbox-system"
 
 
@@ -40,7 +45,7 @@ NAMESPACE = "agent-sandbox-system"
 def sandbox() -> Generator[KubernetesSandbox]:
     """Provide a sandbox connected to Kind via auto-tunnel."""
     sb = KubernetesSandbox(
-        template_name=TEMPLATE,
+        warmpool_name=WARMPOOL,
         namespace=NAMESPACE,
     )
     yield sb
@@ -141,7 +146,7 @@ class TestFileOperations:
 
 class TestLifecycle:
     def test_context_manager_cleanup(self) -> None:
-        with KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE) as sb:
+        with KubernetesSandbox(warmpool_name=WARMPOOL, namespace=NAMESPACE) as sb:
             resp = sb.execute("echo 'inside context'")
             assert resp.exit_code == 0
         assert not sb._started
@@ -149,7 +154,7 @@ class TestLifecycle:
     def test_reuse_sandbox_true_same_pod(self) -> None:
         """Persistent mode: files survive across execute() calls (same pod)."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             reuse_sandbox=True,
         ) as sb:
@@ -158,7 +163,7 @@ class TestLifecycle:
             assert "marker" in resp.output
 
     def test_explicit_start_stop(self) -> None:
-        sb = KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE)
+        sb = KubernetesSandbox(warmpool_name=WARMPOOL, namespace=NAMESPACE)
         sb.start()
         resp = sb.execute("echo 'started'")
         assert resp.exit_code == 0
@@ -175,7 +180,7 @@ class TestConcurrency:
     def test_sequential_execute_reuses_pod(self) -> None:
         """Multiple sequential execute() calls reuse the same sandbox pod."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as sb:
             # Write a marker on the first call
@@ -190,7 +195,7 @@ class TestConcurrency:
 
     def test_lazy_init_without_explicit_start(self) -> None:
         """execute() works without calling start() first."""
-        sb = KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE)
+        sb = KubernetesSandbox(warmpool_name=WARMPOOL, namespace=NAMESPACE)
         assert not sb._started
         resp = sb.execute("echo 'lazy'")
         assert sb._started
@@ -201,7 +206,7 @@ class TestConcurrency:
     def test_concurrent_execute_same_sandbox(self) -> None:
         """Multiple threads calling execute() concurrently share one pod."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as sb:
             results: dict[int, str] = {}
@@ -229,7 +234,7 @@ class TestConcurrency:
     def test_concurrent_mixed_operations(self) -> None:
         """execute(), upload_files(), download_files() from parallel threads."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as sb:
             # Seed a file so downloads have something to read
@@ -282,7 +287,7 @@ class TestConcurrency:
 
     def test_concurrent_stop_is_safe(self) -> None:
         """Multiple threads calling stop() concurrently don't crash."""
-        sb = KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE)
+        sb = KubernetesSandbox(warmpool_name=WARMPOOL, namespace=NAMESPACE)
         sb.start()
         assert sb._started
 
@@ -312,7 +317,7 @@ class TestConcurrency:
         def instance_worker(idx: int) -> None:
             try:
                 with KubernetesSandbox(
-                    template_name=TEMPLATE,
+                    warmpool_name=WARMPOOL,
                     namespace=NAMESPACE,
                 ) as sb:
                     # Each sandbox gets its own pod — write a unique marker
@@ -353,7 +358,7 @@ class TestAllowPrefixes:
     def test_write_allowed_under_prefix(self) -> None:
         """write() succeeds when the path is under an allowed prefix."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             allow_prefixes=["/workspace/", "/tmp/"],
         ) as sb:
@@ -366,7 +371,7 @@ class TestAllowPrefixes:
     def test_write_blocked_outside_prefix(self) -> None:
         """write() returns an error when the path is outside allowed prefixes."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             allow_prefixes=["/workspace/"],
         ) as sb:
@@ -377,7 +382,7 @@ class TestAllowPrefixes:
     def test_edit_blocked_outside_prefix(self) -> None:
         """edit() returns an error when the path is outside allowed prefixes."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             allow_prefixes=["/workspace/"],
         ) as sb:
@@ -393,7 +398,7 @@ class TestAllowPrefixes:
     def test_execute_not_restricted_by_allow_prefixes(self) -> None:
         """execute() is not subject to allow_prefixes (tool-level policy only)."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             allow_prefixes=["/workspace/"],
         ) as sb:
@@ -411,7 +416,7 @@ class TestVirtualMode:
     def test_write_and_read_under_root_dir(self) -> None:
         """Virtual paths are resolved under root_dir for write and read."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs",
@@ -433,7 +438,7 @@ class TestVirtualMode:
     def test_edit_under_root_dir(self) -> None:
         """edit() resolves virtual paths under root_dir."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs-edit",
@@ -447,7 +452,7 @@ class TestVirtualMode:
     def test_path_traversal_blocked(self) -> None:
         """Path traversal (``..``) is rejected in virtual mode."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs-jail",
@@ -459,7 +464,7 @@ class TestVirtualMode:
     def test_upload_resolves_path(self) -> None:
         """upload_files() resolves virtual paths under root_dir."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs-upload",
@@ -475,7 +480,7 @@ class TestVirtualMode:
     def test_native_download_resolves_path(self) -> None:
         """download_files() in virtual mode resolves paths under root_dir."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs-download",
@@ -489,7 +494,7 @@ class TestVirtualMode:
     def test_ls_info_resolves_path(self) -> None:
         """ls_info() resolves the virtual path under root_dir."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs-ls",
@@ -504,7 +509,7 @@ class TestVirtualMode:
     def test_virtual_mode_combined_with_allow_prefixes(self) -> None:
         """allow_prefixes checks the resolved path (after virtual-mode resolution)."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             virtual_mode=True,
             root_dir="/tmp/vfs-combined",
@@ -529,7 +534,7 @@ class TestSkipCleanup:
         verified via a separate sandbox that checks the SandboxClaim still exists.
         """
         sb = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             skip_cleanup=True,
         )
@@ -545,7 +550,7 @@ class TestSkipCleanup:
         # The SandboxClaim should still exist in the cluster.
         # We can verify by querying the Kubernetes API.
         if claim_name:
-            probe = KubernetesSandbox(template_name=TEMPLATE, namespace=NAMESPACE)
+            probe = KubernetesSandbox(warmpool_name=WARMPOOL, namespace=NAMESPACE)
             resp = probe.execute(f"echo 'claim {claim_name} survived'")
             # Just verifying we can still create sandboxes; the claim
             # existence check would require kubectl, which is validated
@@ -566,7 +571,7 @@ class TestReconnect:
         """
         # Phase 1: create sandbox and write a marker file.
         sb1 = KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             skip_cleanup=True,
         )
@@ -580,7 +585,7 @@ class TestReconnect:
         # Phase 2: reconnect using claim_name and read the marker file.
         try:
             sb2 = KubernetesSandbox(
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 claim_name=saved_claim,
             )
@@ -598,7 +603,7 @@ class TestReconnect:
     def test_claim_name_property_available_after_start(self) -> None:
         """claim_name is populated after start and can be persisted."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
         ) as sb:
             assert sb.claim_name is not None
@@ -614,7 +619,7 @@ class TestLabels:
     def test_labels_applied_to_sandbox(self) -> None:
         """Sandboxes created with labels can be inspected via kubectl."""
         with KubernetesSandbox(
-            template_name=TEMPLATE,
+            warmpool_name=WARMPOOL,
             namespace=NAMESPACE,
             labels={"test-suite": "integration", "feature": "labels"},
         ) as sb:
@@ -639,7 +644,7 @@ class TestEcosystemStandardMode:
         client = SandboxClient(
             connection_config=SandboxLocalTunnelConnectionConfig(),
         )
-        handle = client.create_sandbox(template=TEMPLATE, namespace=NAMESPACE)
+        handle = client.create_sandbox(warmpool=WARMPOOL, namespace=NAMESPACE)
         try:
             backend = KubernetesSandbox(sandbox=handle, namespace=NAMESPACE)
             assert backend._started
@@ -669,7 +674,7 @@ class TestEcosystemStandardMode:
             backend = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
                 labels={"test": "factory"},
             )
@@ -682,7 +687,7 @@ class TestEcosystemStandardMode:
             backend2 = create_kubernetes_sandbox(
                 client=client,
                 claim_name=claim,
-                template_name=TEMPLATE,
+                warmpool_name=WARMPOOL,
                 namespace=NAMESPACE,
             )
             resp2 = backend2.execute("echo 'reused'")

@@ -1,5 +1,8 @@
 # SandboxTemplate — defines the pod spec for Python sandbox instances.
-# Used by SandboxClient to create SandboxClaims.
+#
+# Referenced by sandbox-warmpool.yaml, which is in turn what a SandboxClaim
+# points at.  Claims never name a template directly: as of agent-sandbox
+# v0.5.0 (API v1beta1) `SandboxClaim.spec` has no template reference field.
 #
 # The python-runtime-sandbox image provides:
 #   - Python 3 with pip
@@ -9,12 +12,25 @@
 # For Kind clusters the gVisor runtimeClassName is omitted because
 # Kind nodes use the default runc runtime.  Add it back for
 # production clusters that have gVisor installed.
-apiVersion: extensions.agents.x-k8s.io/v1alpha1
+apiVersion: extensions.agents.x-k8s.io/v1beta1
 kind: SandboxTemplate
 metadata:
   name: python-sandbox-template
   namespace: agent-sandbox-system
 spec:
+  # Generate a headless Service per sandbox. Required, not optional: the
+  # Python sandbox-router prefers the pod IP from the Sandbox status but falls
+  # back to the DNS name `<sandbox>.<namespace>.svc.cluster.local`, and without
+  # a Service that name does not resolve — the fallback then returns 502
+  # "Name or service not known".  The failure is intermittent, showing up only
+  # when a request beats the router's pod-IP lookup, so it presents as a flaky
+  # concurrency test rather than a routing misconfiguration.
+  #
+  # The Go router fixed the fallback itself by indexing its pod-IP cache by
+  # namespace/name (kubernetes-sigs#1239); we run the Python router, so we
+  # make the DNS path work instead.  Ports are derived from the container's
+  # declared containerPort automatically as of v0.5.4 (#1258).
+  service: true
   podTemplate:
     metadata:
       labels:
@@ -24,7 +40,7 @@ spec:
       # runtimeClassName: gvisor
       containers:
         - name: python-runtime
-          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.4.6
+          image: registry.k8s.io/agent-sandbox/python-runtime-sandbox:v0.5.4
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8888
