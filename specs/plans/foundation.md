@@ -34,6 +34,7 @@ langchain-k8s/
 ```
 
 **Naming conventions** (following LangChain partner packages):
+
 - **PyPI package**: `langchain-k8s`
 - **Python module**: `langchain_k8s`
 - **Class**: `KubernetesSandbox`
@@ -176,9 +177,11 @@ class KubernetesSandbox(BaseSandbox):
 ### Core Methods
 
 **`id` property:**
+
 - Returns the sandbox's unique identifier (from `SandboxClient` attributes, or a generated UUID as fallback)
 
 **`execute(command: str) -> ExecuteResponse`:**
+
 1. Calls `_ensure_sandbox()` (lazy init)
 2. Calls `self._sandbox.run(command)`
 3. Combines stdout + stderr into `output`
@@ -187,10 +190,12 @@ class KubernetesSandbox(BaseSandbox):
 6. On connection error with `reuse_sandbox=True`: destroys sandbox, recreates, retries once
 
 **`upload_files(files: list[tuple[str, bytes]]) -> list[FileUploadResponse]`:**
+
 - For each `(path, content)`: validates path starts with `/`, then runs `mkdir -p $(dirname path) && printf '%s' '<base64>' | base64 -d > path` via `execute()`
 - Returns per-file `FileUploadResponse` with error mapping
 
 **`download_files(paths: list[str]) -> list[FileDownloadResponse]`:**
+
 - For each path: runs `base64 <path>` via `execute()`, decodes result
 - Returns per-file `FileDownloadResponse` with content or error
 
@@ -283,6 +288,7 @@ strict = true
 **`test_imports.py`** — Smoke test that the package imports correctly.
 
 **`test_sandbox.py`** — Core logic tests with mocked `SandboxClient`:
+
 - Test `execute()` maps stdout/stderr/exit_code to `ExecuteResponse`
 - Test `execute()` truncates large output and sets `truncated=True`
 - Test `upload_files()` base64-encodes content and writes via execute
@@ -301,6 +307,7 @@ strict = true
 ### Integration Tests (`tests/integration/`)
 
 **`test_kind.py`** — End-to-end tests against a real Kind cluster:
+
 - Marked with `@pytest.mark.integration`
 - Prerequisites: Kind cluster, agent-sandbox controller, sandbox-router, python-runtime-sandbox image
 - Tests:
@@ -331,20 +338,20 @@ uv run pytest --cov=langchain_k8s --cov-report=term-missing
 
 ## 5. Files to Create
 
-| # | File | Purpose |
-|---|------|---------|
-| 1 | `pyproject.toml` | Package metadata, deps, tooling config |
-| 2 | `src/langchain_k8s/_version.py` | Version string |
-| 3 | `src/langchain_k8s/sandbox.py` | `KubernetesSandbox` — core implementation |
-| 4 | `src/langchain_k8s/__init__.py` | Public API exports |
-| 5 | `tests/__init__.py` | Test package |
-| 6 | `tests/conftest.py` | Shared fixtures (mock SandboxClient) |
-| 7 | `tests/unit/__init__.py` | Unit test package |
-| 8 | `tests/unit/test_imports.py` | Import smoke tests |
-| 9 | `tests/unit/test_sandbox.py` | Unit tests with mocks |
-| 10 | `tests/integration/__init__.py` | Integration test package |
-| 11 | `tests/integration/test_kind.py` | Kind cluster integration tests |
-| 12 | `README.md` | Docs: installation, usage, examples |
+| #   | File                             | Purpose                                   |
+| --- | -------------------------------- | ----------------------------------------- |
+| 1   | `pyproject.toml`                 | Package metadata, deps, tooling config    |
+| 2   | `src/langchain_k8s/_version.py`  | Version string                            |
+| 3   | `src/langchain_k8s/sandbox.py`   | `KubernetesSandbox` — core implementation |
+| 4   | `src/langchain_k8s/__init__.py`  | Public API exports                        |
+| 5   | `tests/__init__.py`              | Test package                              |
+| 6   | `tests/conftest.py`              | Shared fixtures (mock SandboxClient)      |
+| 7   | `tests/unit/__init__.py`         | Unit test package                         |
+| 8   | `tests/unit/test_imports.py`     | Import smoke tests                        |
+| 9   | `tests/unit/test_sandbox.py`     | Unit tests with mocks                     |
+| 10  | `tests/integration/__init__.py`  | Integration test package                  |
+| 11  | `tests/integration/test_kind.py` | Kind cluster integration tests            |
+| 12  | `README.md`                      | Docs: installation, usage, examples       |
 
 ---
 

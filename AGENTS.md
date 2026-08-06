@@ -2,6 +2,18 @@
 
 This file provides guidance for AI agents (e.g. Claude, Codex, Copilot) working on this repository.
 
+## OpenWiki
+
+This repository has documentation located in the /openwiki directory.
+
+Start here:
+
+- [OpenWiki quickstart](openwiki/quickstart.md)
+
+OpenWiki includes repository overview, architecture notes, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
+
+When working in this repository, read the OpenWiki quickstart first, then follow its links to the relevant architecture, workflow, domain, operation, and testing notes.
+
 ## Project Overview
 
 `langchain-k8s` is a Python package that integrates Kubernetes-native execution sandboxes with LangChain Deep Agents. It exposes a `KubernetesSandbox` class that implements the `BaseSandbox` protocol from `deepagents`, allowing agents to run shell commands and perform file operations inside ephemeral or persistent Kubernetes pods.
@@ -41,17 +53,17 @@ scripts/             # kind-setup.sh / kind-teardown.sh
 
 Run `make` or `make help` to list all available targets. Common ones:
 
-| Command | What it does |
-|---------|--------------|
-| `make install` | Install all dependencies via `uv sync` |
-| `make check` | Lint + format check + typecheck |
-| `make test-unit` | Unit tests with coverage |
-| `make test-integration` | Integration tests (needs cluster) |
-| `make test` | Both unit and integration tests |
-| `make cluster-up` | Spin up local Kind cluster |
-| `make cluster-down` | Tear down local Kind cluster |
-| `make build` | Build distributable package |
-| `make clean` | Remove build artefacts and caches |
+| Command                 | What it does                           |
+| ----------------------- | -------------------------------------- |
+| `make install`          | Install all dependencies via `uv sync` |
+| `make check`            | Lint + format check + typecheck        |
+| `make test-unit`        | Unit tests with coverage               |
+| `make test-integration` | Integration tests (needs cluster)      |
+| `make test`             | Both unit and integration tests        |
+| `make cluster-up`       | Spin up local Kind cluster             |
+| `make cluster-down`     | Tear down local Kind cluster           |
+| `make build`            | Build distributable package            |
+| `make clean`            | Remove build artefacts and caches      |
 
 ## Package Manager
 
@@ -130,15 +142,15 @@ Ruff is configured with rules: E, F, I, UP, B, SIM. Line length is 120 character
 
 When bumping the `k8s-agent-sandbox` version, update **all** of the following:
 
-| File | What to update |
-|------|---------------|
-| `pyproject.toml` | `k8s-agent-sandbox>=X.Y.Z` version constraint |
-| `k8s/sandbox-template.yaml` | `python-runtime-sandbox` container image tag |
-| `scripts/kind-setup.sh` | `AGENT_SANDBOX_VERSION` default value |
-| `src/langchain_k8s/sandbox.py` | Adapt to any SDK API changes (renamed methods, new parameters) |
-| `tests/conftest.py` | Update mocks if SDK interfaces changed (e.g. method renames) |
-| `tests/unit/test_sandbox.py` | Update tests for mock changes and new features |
-| `README.md` | Document new connection modes, parameters, or behaviour changes |
+| File                           | What to update                                                  |
+| ------------------------------ | --------------------------------------------------------------- |
+| `pyproject.toml`               | `k8s-agent-sandbox>=X.Y.Z` version constraint                   |
+| `k8s/sandbox-template.yaml`    | `python-runtime-sandbox` container image tag                    |
+| `scripts/kind-setup.sh`        | `AGENT_SANDBOX_VERSION` default value                           |
+| `src/langchain_k8s/sandbox.py` | Adapt to any SDK API changes (renamed methods, new parameters)  |
+| `tests/conftest.py`            | Update mocks if SDK interfaces changed (e.g. method renames)    |
+| `tests/unit/test_sandbox.py`   | Update tests for mock changes and new features                  |
+| `README.md`                    | Document new connection modes, parameters, or behaviour changes |
 
 After updating, run `uv sync` then `make check && make test-unit` to verify.
 
@@ -146,13 +158,13 @@ After updating, run `uv sync` then `make check && make test-unit` to verify.
 
 When investigating a bug or adding a feature, start here:
 
-| File | Why |
-|------|-----|
-| `src/langchain_k8s/sandbox.py` | Core logic — lifecycle, execution, file ops |
-| `tests/unit/test_sandbox.py` | Existing unit test patterns and mock usage |
-| `tests/conftest.py` | Shared fixtures, mock `SandboxClient` factory |
-| `src/langchain_k8s/proxy.py` | Only touch if investigating proxy/k8s client issues |
-| `specs/plans/foundation.md` | Original architectural decisions and design rationale |
+| File                           | Why                                                   |
+| ------------------------------ | ----------------------------------------------------- |
+| `src/langchain_k8s/sandbox.py` | Core logic — lifecycle, execution, file ops           |
+| `tests/unit/test_sandbox.py`   | Existing unit test patterns and mock usage            |
+| `tests/conftest.py`            | Shared fixtures, mock `SandboxClient` factory         |
+| `src/langchain_k8s/proxy.py`   | Only touch if investigating proxy/k8s client issues   |
+| `specs/plans/foundation.md`    | Original architectural decisions and design rationale |
 
 ## Environment Variables (Integration Tests)
 
@@ -166,11 +178,11 @@ No secrets or credentials are required for unit tests.
 
 ## CI Workflows
 
-| Workflow | Trigger | What it does |
-|----------|---------|--------------|
-| `ci.yml` | PR to `main` | Lint, type check, unit tests on Python 3.11 and 3.12 |
-| `integration.yml` | Manual (`workflow_dispatch`) | Spin up Kind, run integration tests |
-| `publish.yml` | GitHub release published | Build and publish package to PyPI |
+| Workflow          | Trigger                      | What it does                                         |
+| ----------------- | ---------------------------- | ---------------------------------------------------- |
+| `ci.yml`          | PR to `main`                 | Lint, type check, unit tests on Python 3.11 and 3.12 |
+| `integration.yml` | Manual (`workflow_dispatch`) | Spin up Kind, run integration tests                  |
+| `publish.yml`     | GitHub release published     | Build and publish package to PyPI                    |
 
 ## Do Not
 
