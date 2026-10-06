@@ -1,3 +1,7 @@
+> [!IMPORTANT]
+> **This repository is moving to [Backbase/langchain-k8s](https://github.com/Backbase/langchain-k8s).**
+> Further implementation and development will happen there. Please use the Backbase repository for issues, pull requests, and new work.
+
 <p align="center">
   <img src="docs/icon.svg" alt="langchain-k8s logo" width="140" />
 </p>
